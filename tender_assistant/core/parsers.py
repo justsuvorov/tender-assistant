@@ -241,14 +241,34 @@ class DataParser:
 
     def __init__(self, file_path: str):
         self.file_path = file_path
+        self._validate(file_path)
         self.parser = self._build_engine(file_path)
 
     def origin_data(self, file_path: str=None) -> str:
         """Read document, apply initial cleaning, return markdown string."""
         if file_path is None:
             file_path = self.file_path
+        else:
+            self._validate(file_path)
         raw = self.parser.read_document(file_path)
         return self._clean(raw)
+
+    @staticmethod
+    def _validate(file_path: str) -> None:
+        """Fail early with a clear message instead of an SDK-specific error.
+
+        Otherwise a missing path surfaces as PackageNotFoundError from
+        python-docx (or a zip error from openpyxl), which callers cannot
+        tell apart from a genuine parsing failure.
+        """
+        if not file_path:
+            raise FileNotFoundError("Не указан путь к файлу")
+
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Файл не найден: {file_path}")
+        if not path.is_file():
+            raise FileNotFoundError(f"Путь не является файлом: {file_path}")
 
     def _build_engine(self, file_path: str) -> Parser:
         ext = Path(file_path).suffix.lower()

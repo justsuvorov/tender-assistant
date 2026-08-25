@@ -150,17 +150,16 @@ class DocumentListResponse(PostProcessor):
     def report(self, raw_text: str) -> List[dict]:
         data = self._json.extract(raw_text)
 
+        # Разобранный JSON авторитетен: пустой список — это ответ «документов
+        # нет», а не провал разбора. Текстовый откат только когда JSON не вышел,
+        # иначе на пустом ответе он «найдёт» документы в самом тексте JSON.
         if isinstance(data, dict):
             if data.get("is_document_list") is False:
                 return []
-            items = data.get("documents") or data.get("items") or []
-        elif isinstance(data, list):
-            items = data
-        else:
-            items = []
+            return self._normalise(data.get("documents") or data.get("items") or [])
 
-        if items:
-            return self._normalise(items)
+        if isinstance(data, list):
+            return self._normalise(data)
 
         return [{"name": name, "mandatory": True, "note": ""}
                 for name in self._fallback.lines(raw_text)]
@@ -247,7 +246,11 @@ class FormFieldsResponse(PostProcessor):
         elif isinstance(data, list):
             items = data
         else:
-            items = []
+            items = None  # JSON не разобран — ниже сработает текстовый откат
+
+        if items is None:
+            return [{"label": line, "anchor": line, "kind": "line"}
+                    for line in self._fallback.lines(raw_text)]
 
         result = []
         for item in items:
@@ -262,11 +265,7 @@ class FormFieldsResponse(PostProcessor):
             if label:
                 result.append({"label": label, "anchor": anchor, "kind": kind})
 
-        if result:
-            return result
-
-        return [{"label": line, "anchor": line, "kind": "line"}
-                for line in self._fallback.lines(raw_text)]
+        return result
 
 
 class TenderRowPostProcessor(PostProcessor):

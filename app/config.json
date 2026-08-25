@@ -1,0 +1,4 @@
+{
+  "api_base_url": "http://localhost:8000",
+  "request_timeout": 3600
+}

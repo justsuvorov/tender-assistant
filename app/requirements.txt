@@ -1,0 +1,5 @@
+# Зависимости настольного интерфейса (сервис ставится из корневого requirements.txt)
+pyedifice
+PySide6
+requests
+loguru
