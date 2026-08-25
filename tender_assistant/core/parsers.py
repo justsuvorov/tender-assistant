@@ -243,8 +243,10 @@ class DataParser:
         self.file_path = file_path
         self.parser = self._build_engine(file_path)
 
-    def origin_data(self, file_path: str) -> str:
+    def origin_data(self, file_path: str=None) -> str:
         """Read document, apply initial cleaning, return markdown string."""
+        if file_path is None:
+            file_path = self.file_path
         raw = self.parser.read_document(file_path)
         return self._clean(raw)
 
