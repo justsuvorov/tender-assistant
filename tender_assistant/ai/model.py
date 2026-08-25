@@ -3,11 +3,10 @@ import time
 import httpx
 from abc import ABC, abstractmethod
 
-import anthropic
-from google import genai
-from google.genai import errors as genai_errors
-
 from tender_assistant.core.config import settings
+
+# SDK провайдеров импортируются лениво: в установке достаточно пакета
+# только того провайдера, который указан в AI_PROVIDER.
 
 
 class AIModel(ABC):
@@ -113,6 +112,8 @@ class ServiceLLMModel(AIModel, ABC):
 
 class GeminiModel(ServiceLLMModel):
     def __init__(self):
+        from google import genai
+
         self._client = genai.Client(
             api_key=settings.gemini_api_key.get_secret_value()
         )
@@ -153,6 +154,9 @@ class GeminiModel(ServiceLLMModel):
 
 class AnthropicModel(ServiceLLMModel):
     def __init__(self):
+        import anthropic
+
+        self._sdk = anthropic
         self._client = anthropic.Anthropic(
             api_key=settings.anthropic_api_key.get_secret_value()
         )
@@ -173,7 +177,7 @@ class AnthropicModel(ServiceLLMModel):
         for attempt in range(1, self.retries + 1):
             try:
                 return self._call_api(query)
-            except anthropic.RateLimitError as e:
+            except self._sdk.RateLimitError as e:
                 if attempt < self.retries:
                     wait = self.retry_delay
                     try:
@@ -191,7 +195,7 @@ class AnthropicModel(ServiceLLMModel):
                     time.sleep(wait)
                     continue
                 raise RuntimeError(f"Ошибка Anthropic API: {e}") from e
-            except anthropic.APIStatusError as e:
+            except self._sdk.APIStatusError as e:
                 if e.status_code in (500, 503) and attempt < self.retries:
                     print(
                         f"[WARN] {self.__class__.__name__} {e.status_code}, "
@@ -488,13 +492,14 @@ class ModelFactory:
     AI_PROVIDER=gemini     → GeminiModel  (Google Gemini API)
     AI_PROVIDER=anthropic  → AnthropicModel (Anthropic Claude API)
     AI_PROVIDER=qwen       → QwenModel (Qwen via OpenAI-compatible API)
+    AI_PROVIDER=vsk        → VskAIModel (OpenAI-compatible chat API)
     """
 
-    _PROVIDERS = ("ollama", "gemini", "anthropic", "qwen")
+    _PROVIDERS = ("ollama", "gemini", "anthropic", "qwen", "vsk")
 
     @staticmethod
     def create() -> AIModel:
-        provider = settings.ai_provider
+        provider = settings.ai_provider.strip().lower()
 
         if provider == "ollama":
             return OllamaModel(
@@ -509,6 +514,8 @@ class ModelFactory:
             return AnthropicModel()
         if provider == "qwen":
             return QwenModel()
+        if provider == "vsk":
+            return VskAIModel()
 
         raise ValueError(
             f"Неизвестный AI_PROVIDER='{provider}'. "

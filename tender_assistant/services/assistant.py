@@ -1,23 +1,138 @@
-from voice_assistant.ai.model import AIModel
-from voice_assistant.ai.postprocessor import PostProcessor
-from voice_assistant.ai.preprocessor import Preprocessor
-from voice_assistant.reports.report_export import ReportExport
+from tender_assistant.ai.model import AIModel, ModelFactory
+from tender_assistant.ai.postprocessor import (
+    DocumentListResponse,
+    FormFieldsResponse,
+    NormativeFilterResponse,
+    SectionsMatcherResponse,
+    TenderRowPostProcessor,
+    TitleMatcherPostProcessor,
+)
+from tender_assistant.ai.promt_builders import PromptEngine
+from tender_assistant.application.application import (
+    AITenderForm,
+    TenderAIQuery,
+    TenderApplication,
+)
+from tender_assistant.core.parsers import DataParser
+from tender_assistant.core.pydantic_models import AssistantResult
+from tender_assistant.documents.application_documents import (
+    ApplicationDocuments,
+    TitleMatcher,
+)
+from tender_assistant.documents.document_list import (
+    ContextMatcher,
+    DocumentList,
+    DocumentSections,
+    NormativeChecker,
+    SectionsMatcher,
+)
+from tender_assistant.models.request import APIRequest
+from tender_assistant.reports.report_export import (
+    ApplicationDocumentsReport,
+    DocumentListReport,
+    TenderApplicationReport,
+)
+from tender_assistant.reports.writers import TenderReportWriter
 
-class AIAssistantService:
-    def __init__(self,
-                 preprocessor: Preprocessor,
-                 postprocessor: PostProcessor,
-                 ai_model: AIModel,
-                 report_export: ReportExport,
-                 ):
-        self._preprocessor = preprocessor
-        self._postprocessor = postprocessor
-        self._model = ai_model
-        self._report_export = report_export
 
-    def result(self):
-        model_query = self._preprocessor.query()
-        model_response = self._model.response(model_query)
-        report = self._postprocessor.report(model_response)
-        return self._report_export.response(report_text=report)
+class TenderAssistantService:
+    """Собирает и выполняет три этапа подготовки тендерной заявки.
 
+    1. Перечень документов — из требований тендера, с проверкой по нормативной базе.
+    2. Подготовка файлов — семантический поиск в архиве и сбор комплекта.
+    3. Заполнение шаблона заявки — по базе знаний и требованиям тендера.
+
+    Этапы связаны по данным: перечень документов из этапа 1 идёт в этап 2.
+    Этап 3 от них не зависит и выполняется в любом случае.
+    """
+
+    def __init__(self, request: APIRequest, ai_model: AIModel = None):
+        self.request = request
+        self.ai_model = ai_model or ModelFactory.create()
+        self.prompt_engine = PromptEngine()
+
+    def result(self) -> AssistantResult:
+        result = AssistantResult(request_id=self.request.message_id)
+
+        result.document_list = self._document_list().result()
+        result.prepared_documents = self._application_documents(
+            result.document_list.documents
+        ).result_set()
+        result.application = self._tender_application().result()
+
+        return result
+
+    # ── Этап 1 ────────────────────────────────────────────────────────────────
+
+    def _document_list(self) -> DocumentList:
+        report = DocumentListReport(output_dir=self.request.results_path)
+
+        return DocumentList(
+            report=report,
+            document_sections=DocumentSections(
+                data_parser=DataParser(file_path=self.request.file_path)
+            ),
+            sections_matcher=SectionsMatcher(
+                ai_model=self.ai_model,
+                response_post_processor=SectionsMatcherResponse(),
+                prompt_engine=self.prompt_engine,
+            ),
+            context_matcher=ContextMatcher(
+                ai_model=self.ai_model,
+                response_post_processor=DocumentListResponse(),
+                prompt_engine=self.prompt_engine,
+            ),
+            normative_checker=NormativeChecker(
+                ai_model=self.ai_model,
+                normative_base_folder=self.request.normative_base_folder,
+                response_post_processor=NormativeFilterResponse(),
+                prompt_engine=self.prompt_engine,
+            ),
+        )
+
+    # ── Этап 2 ────────────────────────────────────────────────────────────────
+
+    def _application_documents(self, documents) -> ApplicationDocuments:
+        report = ApplicationDocumentsReport(output_dir=self.request.results_path)
+
+        return ApplicationDocuments(
+            documents_path=self.request.documents_folder_path,
+            documents_list=documents,
+            matcher=TitleMatcher(
+                ai_model=self.ai_model,
+                title_matcher_post_processor=TitleMatcherPostProcessor(),
+                prompt_engine=self.prompt_engine,
+            ),
+            result_folder_name=self.request.result_folder_name,
+            results_path=self.request.results_path,
+            report=report,
+        )
+
+    # ── Этап 3 ────────────────────────────────────────────────────────────────
+
+    def _tender_application(self) -> TenderApplication:
+        report = TenderApplicationReport(output_dir=self.request.results_path)
+
+        # База знаний для заявки может быть отдельной от нормативной базы,
+        # использованной при проверке перечня документов.
+        knowledge_base = (
+            self.request.knowledge_base_folder or self.request.normative_base_folder
+        )
+
+        return TenderApplication(
+            application_template_path=self.request.application_template_path,
+            tender_info_path=self.request.file_path,
+            normative_base_folder=knowledge_base,
+            tender_form=AITenderForm(
+                tender_query=TenderAIQuery(
+                    ai_model=self.ai_model,
+                    tender_row_postprocessor=TenderRowPostProcessor(),
+                    prompt_engine=self.prompt_engine,
+                ),
+                fields_post_processor=FormFieldsResponse(),
+                prompt_engine=self.prompt_engine,
+            ),
+            report_writer=TenderReportWriter(),
+            report=report,
+            results_path=self.request.results_path,
+        )

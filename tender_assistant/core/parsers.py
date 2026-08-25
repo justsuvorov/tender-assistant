@@ -265,3 +265,166 @@ class DataParser:
         data = data.strip()
         data = re.sub(r"\n{3,}", "\n\n", data)
         return data
+
+
+# ---------------------------------------------------------------------------
+# Document outline
+# ---------------------------------------------------------------------------
+
+class Section:
+    """One section of a document: its heading and the text underneath it."""
+
+    def __init__(self, title: str, level: int, body: str = ""):
+        self.title = title
+        self.level = level
+        self.body = body
+
+    @property
+    def text(self) -> str:
+        """Heading plus body — what gets sent to the LLM as section context."""
+        return f"{self.title}\n\n{self.body}".strip()
+
+    def __repr__(self) -> str:
+        return f"Section(level={self.level}, title={self.title!r})"
+
+
+class MarkdownOutline:
+    """Split markdown produced by DataParser into sections.
+
+    Two kinds of headings are recognised:
+
+    1. Markdown headings (``#``..``######``) — produced by the Word parser from
+       real heading styles and by the PDF/Excel parsers for pages and sheets.
+    2. Numbered paragraphs (``5.`` / ``5.1.`` / ``РАЗДЕЛ 3``) — tender
+       documents are routinely written without heading styles, so a document
+       with no markdown headings at all would otherwise have no outline.
+
+    Heuristic headings are only used when no markdown headings were found,
+    so a properly styled document is never polluted by false positives.
+    """
+
+    _MD_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*$")
+
+    _NUMBERED = re.compile(
+        r"^\s*(?:(?:РАЗДЕЛ|Раздел|ГЛАВА|Глава|СТАТЬЯ|Статья|ПРИЛОЖЕНИЕ|Приложение)\s+)?"
+        r"(\d+(?:\.\d+)*)\.?\s+(\S.*)$"
+    )
+    _CAPS = re.compile(r"^[^a-zа-яё]{6,120}$")
+
+    _MAX_HEADING_LEN = 200
+
+    def __init__(self, markdown_text: str):
+        self._text = markdown_text or ""
+        self._sections = self._parse(self._text)
+
+    @property
+    def sections(self) -> list["Section"]:
+        return self._sections
+
+    @property
+    def has_headings(self) -> bool:
+        return bool(self._sections)
+
+    def titles(self) -> list[str]:
+        return [s.title for s in self._sections]
+
+    def as_list(self) -> str:
+        """Headings as a plain numbered list — the LLM input for section search."""
+        return "\n".join(f"{i + 1}. {s.title}" for i, s in enumerate(self._sections))
+
+    def find(self, title: str):
+        """Find a section by heading text: exact, then normalised, then partial."""
+        if not title:
+            return None
+
+        for section in self._sections:
+            if section.title == title:
+                return section
+
+        target = self._norm(title)
+        if not target:
+            return None
+
+        for section in self._sections:
+            if self._norm(section.title) == target:
+                return section
+
+        for section in self._sections:
+            norm = self._norm(section.title)
+            if norm and (target in norm or norm in target):
+                return section
+
+        return None
+
+    def _parse(self, text: str) -> list["Section"]:
+        sections = self._parse_markdown(text)
+        if sections:
+            return sections
+        return self._parse_numbered(text)
+
+    def _parse_markdown(self, text: str) -> list["Section"]:
+        sections: list[Section] = []
+        body: list[str] = []
+
+        for line in text.splitlines():
+            match = self._MD_HEADING.match(line.strip())
+            if match:
+                if sections:
+                    sections[-1].body = "\n".join(body).strip()
+                body = []
+                sections.append(
+                    Section(title=match.group(2).strip(), level=len(match.group(1)))
+                )
+            elif sections:
+                body.append(line)
+
+        if sections:
+            sections[-1].body = "\n".join(body).strip()
+
+        return sections
+
+    def _parse_numbered(self, text: str) -> list["Section"]:
+        sections: list[Section] = []
+        body: list[str] = []
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            level = self._heuristic_level(stripped)
+
+            if level:
+                if sections:
+                    sections[-1].body = "\n".join(body).strip()
+                body = []
+                sections.append(Section(title=stripped, level=level))
+            elif sections:
+                body.append(line)
+
+        if sections:
+            sections[-1].body = "\n".join(body).strip()
+
+        return sections
+
+    def _heuristic_level(self, line: str) -> int:
+        """Return heading level for a styleless line, or 0 if it is body text."""
+        if not line or len(line) > self._MAX_HEADING_LEN or line.startswith("|"):
+            return 0
+
+        match = self._NUMBERED.match(line)
+        if match:
+            tail = match.group(2)
+            # A numbered heading is a title, not a sentence: enumeration items
+            # end with ";" or "," and sentences contain several full stops.
+            if tail.endswith((";", ",")) or tail.count(".") > 1:
+                return 0
+            return min(match.group(1).count(".") + 1, 6)
+
+        if self._CAPS.match(line) and any(c.isalpha() for c in line):
+            return 1
+
+        return 0
+
+    @staticmethod
+    def _norm(text: str) -> str:
+        text = re.sub(r"^[\s\d.)»«\-–—]+", "", text or "")
+        text = re.sub(r"[^\w\s]", " ", text.lower())
+        return " ".join(text.split())
