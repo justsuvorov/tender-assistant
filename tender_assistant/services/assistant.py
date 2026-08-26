@@ -11,7 +11,12 @@ from tender_assistant.ai.postprocessor import (
 from tender_assistant.ai.promt_builders import PromptEngine
 from tender_assistant.application.application import (
     AITenderForm,
+    ApplicationOutput,
+    CompositeTenderForm,
+    FormTemplate,
+    InlineBlanksForm,
     InlineBlanksQuery,
+    KnowledgeBaseContext,
     TenderAIQuery,
     TenderApplication,
 )
@@ -19,11 +24,15 @@ from tender_assistant.core.parsers import DataParser
 from tender_assistant.core.pydantic_models import AssistantResult
 from tender_assistant.documents.application_documents import (
     ApplicationDocuments,
+    ComplectFolder,
+    DocumentArchive,
     TitleMatcher,
 )
 from tender_assistant.documents.document_list import (
     ContextMatcher,
     DocumentList,
+    DocumentListExtractor,
+    DocumentListOutput,
     DocumentSections,
     NormativeChecker,
     SectionsMatcher,
@@ -70,19 +79,20 @@ class TenderAssistantService:
         report = DocumentListReport(output_dir=self.request.results_path)
 
         return DocumentList(
-            report=report,
-            document_sections=DocumentSections(
-                data_parser=DataParser(file_path=self.request.file_path)
-            ),
-            sections_matcher=SectionsMatcher(
-                ai_model=self.ai_model,
-                response_post_processor=SectionsMatcherResponse(),
-                prompt_engine=self.prompt_engine,
-            ),
-            context_matcher=ContextMatcher(
-                ai_model=self.ai_model,
-                response_post_processor=DocumentListResponse(),
-                prompt_engine=self.prompt_engine,
+            extractor=DocumentListExtractor(
+                document_sections=DocumentSections(
+                    data_parser=DataParser(file_path=self.request.file_path)
+                ),
+                sections_matcher=SectionsMatcher(
+                    ai_model=self.ai_model,
+                    response_post_processor=SectionsMatcherResponse(),
+                    prompt_engine=self.prompt_engine,
+                ),
+                context_matcher=ContextMatcher(
+                    ai_model=self.ai_model,
+                    response_post_processor=DocumentListResponse(),
+                    prompt_engine=self.prompt_engine,
+                ),
             ),
             normative_checker=NormativeChecker(
                 ai_model=self.ai_model,
@@ -90,7 +100,8 @@ class TenderAssistantService:
                 response_post_processor=NormativeFilterResponse(),
                 prompt_engine=self.prompt_engine,
             ),
-            results_path=self.request.results_path,
+            output=DocumentListOutput(results_path=self.request.results_path),
+            report=report,
         )
 
     # ── Этап 2 ────────────────────────────────────────────────────────────────
@@ -99,15 +110,17 @@ class TenderAssistantService:
         report = ApplicationDocumentsReport(output_dir=self.request.results_path)
 
         return ApplicationDocuments(
-            documents_path=self.request.documents_folder_path,
+            archive=DocumentArchive(self.request.documents_folder_path),
             documents_list=documents,
             matcher=TitleMatcher(
                 ai_model=self.ai_model,
                 title_matcher_post_processor=TitleMatcherPostProcessor(),
                 prompt_engine=self.prompt_engine,
             ),
-            result_folder_name=self.request.result_folder_name,
-            results_path=self.request.results_path,
+            complect=ComplectFolder(
+                results_path=self.request.results_path,
+                folder_name=self.request.result_folder_name,
+            ),
             report=report,
         )
 
@@ -122,11 +135,10 @@ class TenderAssistantService:
             self.request.knowledge_base_folder or self.request.normative_base_folder
         )
 
-        return TenderApplication(
-            application_template_path=self.request.application_template_path,
-            tender_info_path=self.request.file_path,
-            normative_base_folder=knowledge_base,
-            tender_form=AITenderForm(
+        # Два независимых заполнителя на один шаблон: построчный по markdown
+        # и пропуски внутри абзацев по объектной модели docx.
+        tender_form = CompositeTenderForm([
+            AITenderForm(
                 tender_query=TenderAIQuery(
                     ai_model=self.ai_model,
                     tender_row_postprocessor=TenderRowPostProcessor(),
@@ -135,12 +147,25 @@ class TenderAssistantService:
                 fields_post_processor=FormFieldsResponse(),
                 prompt_engine=self.prompt_engine,
             ),
-            report_writer=TenderReportWriter(),
-            report=report,
-            results_path=self.request.results_path,
-            inline_query=InlineBlanksQuery(
-                ai_model=self.ai_model,
-                response_post_processor=InlineBlanksResponse(),
-                prompt_engine=self.prompt_engine,
+            InlineBlanksForm(
+                inline_query=InlineBlanksQuery(
+                    ai_model=self.ai_model,
+                    response_post_processor=InlineBlanksResponse(),
+                    prompt_engine=self.prompt_engine,
+                ),
             ),
+        ])
+
+        return TenderApplication(
+            template=FormTemplate(self.request.application_template_path),
+            context=KnowledgeBaseContext(
+                tender_info_path=self.request.file_path,
+                knowledge_base_folder=knowledge_base,
+            ),
+            tender_form=tender_form,
+            output=ApplicationOutput(
+                results_path=self.request.results_path,
+                report_writer=TenderReportWriter(),
+            ),
+            report=report,
         )

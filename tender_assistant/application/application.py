@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from docx import Document
 
@@ -12,7 +12,12 @@ from tender_assistant.ai.postprocessor import (
 )
 from tender_assistant.ai.promt_builders import NormativeBaseLoader, PromptEngine
 from tender_assistant.core.config import settings
-from tender_assistant.core.parsers import DataParser, InlineBlank, find_inline_blanks, render_blanks_context
+from tender_assistant.core.parsers import (
+    DataParser,
+    InlineBlank,
+    find_inline_blanks,
+    render_blanks_context,
+)
 from tender_assistant.core.pydantic_models import (
     FieldStatus,
     FilledField,
@@ -24,6 +29,96 @@ from tender_assistant.reports.writers import ReportWriter, TenderReportWriter
 
 _WORD_SUFFIXES = {".docx", ".doc"}
 
+
+# ── Шаблон заявки ─────────────────────────────────────────────────────────────
+
+class FormTemplate:
+    """Файл шаблона заявки и его представления.
+
+    Разные заполнители смотрят на шаблон по-разному: построчный — на
+    markdown, инлайн-пропуски — на объектную модель docx. Держать оба
+    чтения здесь дешевле и честнее, чем перечитывать файл в каждом:
+    представления собираются лениво и переиспользуются.
+    """
+
+    def __init__(self, path: str):
+        self._path = Path(path)
+        self._markdown: Optional[str] = None
+        self._document = None
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def is_word(self) -> bool:
+        return self._path.suffix.lower() in _WORD_SUFFIXES
+
+    @property
+    def markdown(self) -> str:
+        if self._markdown is None:
+            self._markdown = DataParser(str(self._path)).origin_data()
+        return self._markdown
+
+    @property
+    def document(self) -> Document:
+        """Объектная модель docx. Только для Word-шаблонов (см. is_word)."""
+        if self._document is None:
+            self._document = Document(str(self._path))
+        return self._document
+
+
+# ── Материалы для заполнения ──────────────────────────────────────────────────
+
+class ApplicationContext:
+    """Интерфейс сборки материалов, по которым заполняется заявка."""
+
+    def build(self) -> str:
+        raise NotImplementedError
+
+
+class KnowledgeBaseContext(ApplicationContext):
+    """Материалы = база знаний организации + требования тендера.
+
+    Требования тендера нужны наравне с базой знаний: часть данных заявки
+    (предмет закупки, номер лота, сроки) есть только в них.
+    """
+
+    def __init__(
+        self,
+        tender_info_path: Optional[str],
+        knowledge_base_folder: Optional[str],
+        base_loader: NormativeBaseLoader = None,
+    ):
+        self.tender_info_path = tender_info_path
+        self.knowledge_base_folder = knowledge_base_folder
+        self.base_loader = base_loader or NormativeBaseLoader()
+
+    def build(self) -> str:
+        parts = []
+
+        knowledge_base = self.base_loader.load(self.knowledge_base_folder)
+        if knowledge_base:
+            parts.append("## БАЗА ЗНАНИЙ И ЭТАЛОННЫЕ ЗАЯВКИ\n\n" + knowledge_base)
+
+        tender_info = self._read_tender_info()
+        if tender_info:
+            parts.append("## ТРЕБОВАНИЯ ТЕНДЕРА\n\n" + tender_info)
+
+        return "\n\n---\n\n".join(parts)
+
+    def _read_tender_info(self) -> str:
+        if not self.tender_info_path:
+            return ""
+        try:
+            return DataParser(self.tender_info_path).origin_data()
+        except Exception as exc:
+            # Заявку всё равно нужно заполнить тем, что есть в базе знаний.
+            print(f"[WARN] Требования тендера не прочитаны: {exc}", flush=True)
+            return ""
+
+
+# ── Запросы к модели ──────────────────────────────────────────────────────────
 
 class TenderQuery:
     """Интерфейс поиска значения одного поля заявки."""
@@ -124,10 +219,16 @@ class InlineBlanksQuery(TenderQuery):
         return self.response_post_processor.report(response)
 
 
-class TenderForm:
-    """Интерфейс построчного заполнения формы заявки."""
+# ── Заполнители формы ─────────────────────────────────────────────────────────
 
-    def prepare(self, md_template_form: str, context: str) -> List[FilledField]:
+class TenderForm:
+    """Интерфейс заполнения формы заявки.
+
+    Реализация получает шаблон целиком и сама решает, как его читать:
+    построчно по markdown или по объектной модели docx.
+    """
+
+    def prepare(self, template: FormTemplate, context: str) -> List[FilledField]:
         raise NotImplementedError
 
 
@@ -147,9 +248,9 @@ class AITenderForm(TenderForm):
         # Модель, извлекающая поля, берётся у запроса — отдельный клиент не нужен.
         self.ai_model = getattr(tender_query, "ai_model", None)
 
-    def prepare(self, md_template_form: str, context: str) -> List[FilledField]:
+    def prepare(self, template: FormTemplate, context: str) -> List[FilledField]:
         """Заполняет шаблон значениями из базы знаний и требований тендера."""
-        fields = self._extract_queries_from_form(md_template_form)
+        fields = self._extract_queries_from_form(template.markdown)
         print(f"[INFO] В шаблоне заявки найдено полей: {len(fields)}", flush=True)
 
         filled: List[FilledField] = []
@@ -188,59 +289,23 @@ class AITenderForm(TenderForm):
         return [FormField(**item) for item in items]
 
 
-class TenderApplication:
-    """Этап 3: заполнить шаблон заявки данными из базы знаний."""
+class InlineBlanksForm(TenderForm):
+    """Заполняет пропуски внутри абзацев (несколько на один абзац ячейки).
 
-    def __init__(
-        self,
-        application_template_path: str,
-        tender_info_path: str,
-        normative_base_folder: Optional[str],
-        tender_form: TenderForm,
-        report_writer: ReportWriter = None,
-        report: BaseReport = None,
-        results_path: Optional[str] = None,
-        base_loader: NormativeBaseLoader = None,
-        inline_query: InlineBlanksQuery = None,
-    ):
-        self.report_writer = report_writer or TenderReportWriter()
-        self.report = report or TenderApplicationReport()
-        self.tender_form = tender_form
-        self.normative_base_folder = normative_base_folder
-        self.tender_info_path = tender_info_path
-        self.application_template_path = application_template_path
-        self.results_path = results_path or settings.results_root
-        self.base_loader = base_loader or NormativeBaseLoader()
+    Отдельный заполнитель, а не ветка внутри AITenderForm: построчный разбор
+    идёт по плоскому markdown, где несколько пропусков одного абзаца
+    неразличимы, и даёт одно значение на ячейку. Здесь же нужна объектная
+    модель docx, чтобы адресовать каждый пропуск отдельно.
+    """
+
+    def __init__(self, inline_query: InlineBlanksQuery):
         self.inline_query = inline_query
 
-    def result(self) -> TenderApplicationResult:
-        """Читает шаблон и базу знаний, заполняет поля и сохраняет заявку."""
-        md_template_form = DataParser(self.application_template_path).origin_data()
-        md_tender_info = self._read_tender_info()
-        md_knowledge_base = self._read_base(self.normative_base_folder)
-
-        context = self._build_context(md_knowledge_base, md_tender_info)
-        fields = self.tender_form.prepare(md_template_form, context)
-        fields = fields + self._fill_inline_blanks(context)
-
-        result = TenderApplicationResult(fields=fields)
-        result.filled_path = str(self._write_application(fields))
-        result.report_path = self.report.result(self._report_text(result))
-
-        return result
-
-    def _fill_inline_blanks(self, context: str) -> List[FilledField]:
-        """Несколько пропусков в одном абзаце (см. core/parsers.py) — отдельный
-        путь параллельно построчному: старый механизм даёт одно значение на
-        одну ячейку и не умеет различать несколько пропусков внутри неё.
-        """
-        if self.inline_query is None:
-            return []
-        if Path(self.application_template_path).suffix.lower() not in _WORD_SUFFIXES:
+    def prepare(self, template: FormTemplate, context: str) -> List[FilledField]:
+        if not template.is_word:
             return []
 
-        document = Document(self.application_template_path)
-        blanks = find_inline_blanks(document)
+        blanks = find_inline_blanks(template.document)
         if not blanks:
             return []
 
@@ -263,36 +328,74 @@ class TenderApplication:
             ))
         return fields
 
-    # ── шаги ──────────────────────────────────────────────────────────────────
 
-    def _read_tender_info(self) -> str:
-        """Часть данных заявки берётся из требований тендера."""
-        if not self.tender_info_path:
-            return ""
-        try:
-            return DataParser(self.tender_info_path).origin_data()
-        except Exception as exc:
-            print(f"[WARN] Требования тендера не прочитаны: {exc}", flush=True)
-            return ""
+class CompositeTenderForm(TenderForm):
+    """Несколько заполнителей на один шаблон, результаты складываются.
 
-    def _read_base(self, folder: Optional[str]) -> str:
-        """Читает все файлы базы знаний и склеивает их в markdown."""
-        return self.base_loader.load(folder)
+    Заполнители независимы и адресуют разные места документа, поэтому
+    порядок влияет только на порядок полей в отчёте.
+    """
 
-    @staticmethod
-    def _build_context(md_knowledge_base: str, md_tender_info: str) -> str:
-        parts = []
-        if md_knowledge_base:
-            parts.append("## БАЗА ЗНАНИЙ И ЭТАЛОННЫЕ ЗАЯВКИ\n\n" + md_knowledge_base)
-        if md_tender_info:
-            parts.append("## ТРЕБОВАНИЯ ТЕНДЕРА\n\n" + md_tender_info)
-        return "\n\n---\n\n".join(parts)
+    def __init__(self, forms: Sequence[TenderForm]):
+        self.forms = list(forms)
 
-    def _write_application(self, fields: List[FilledField]) -> Path:
-        """Сохраняет заполненный шаблон с цветовой разметкой статусов."""
-        source = Path(self.application_template_path)
+    def prepare(self, template: FormTemplate, context: str) -> List[FilledField]:
+        fields: List[FilledField] = []
+        for form in self.forms:
+            fields.extend(form.prepare(template, context))
+        return fields
+
+
+# ── Сохранение заполненной заявки ─────────────────────────────────────────────
+
+class ApplicationOutput:
+    """Куда и чем сохраняется заполненная заявка."""
+
+    def __init__(self, results_path: Optional[str] = None, report_writer: ReportWriter = None):
+        self.results_path = results_path or settings.results_root
+        self.report_writer = report_writer or TenderReportWriter()
+
+    def save(self, template: FormTemplate, fields: Sequence[FilledField]) -> Path:
+        """Сохраняет копию шаблона с проставленными значениями и разметкой."""
+        source = template.path
         output = Path(self.results_path) / f"{source.stem}_заполнено{source.suffix}"
         return self.report_writer.write(fields, output_path=output, source_path=source)
+
+
+# ── Оркестратор ───────────────────────────────────────────────────────────────
+
+class TenderApplication:
+    """Этап 3: заполнить шаблон заявки данными из базы знаний.
+
+    Оркестратор: собирает материалы, отдаёт их заполнителю формы, сохраняет
+    результат и пишет отчёт. Сам ничего не читает и не разбирает — вся
+    работа с документами живёт в FormTemplate, ApplicationContext,
+    TenderForm и ApplicationOutput.
+    """
+
+    def __init__(
+        self,
+        template: FormTemplate,
+        context: ApplicationContext,
+        tender_form: TenderForm,
+        output: ApplicationOutput = None,
+        report: BaseReport = None,
+    ):
+        self.template = template
+        self.context = context
+        self.tender_form = tender_form
+        self.output = output or ApplicationOutput()
+        self.report = report or TenderApplicationReport()
+
+    def result(self) -> TenderApplicationResult:
+        context = self.context.build()
+        fields = self.tender_form.prepare(self.template, context)
+
+        result = TenderApplicationResult(fields=fields)
+        result.filled_path = str(self.output.save(self.template, fields))
+        result.report_path = self.report.result(self._report_text(result))
+
+        return result
 
     @staticmethod
     def _report_text(result: TenderApplicationResult) -> str:

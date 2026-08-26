@@ -1,4 +1,5 @@
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -63,59 +64,132 @@ class TitleMatcher:
         )
 
 
-class ApplicationDocuments:
-    """Этап 2: собрать файлы документов из архива в папку заявки."""
+class DocumentArchive:
+    """Архив документов организации: что в нём лежит."""
 
     _SKIP_PREFIXES = ("~$", ".")
 
+    def __init__(self, documents_path: str):
+        self.documents_path = documents_path
+
+    def files(self) -> dict:
+        """{имя файла: путь} по всем файлам архива, включая вложенные папки."""
+        root = Path(self.documents_path)
+        if not root.exists():
+            print(
+                f"[WARN] Папка с документами не найдена: {self.documents_path}",
+                flush=True,
+            )
+            return {}
+
+        files = [
+            file for file in sorted(root.rglob("*"))
+            if file.is_file() and not file.name.startswith(self._SKIP_PREFIXES)
+        ]
+
+        # Одинаковые имена в разных папках различаем относительным путём —
+        # причём ОБА файла, а не только второй найденный. Подменять ключ
+        # только у второго нельзя: для файла в корне архива относительный
+        # путь равен имени, ключ не меняется, и один из файлов молча
+        # затирает другой — модель не увидит его среди кандидатов.
+        name_counts = Counter(file.name for file in files)
+        documents = {
+            (file.name if name_counts[file.name] == 1 else str(file.relative_to(root))): file
+            for file in files
+        }
+
+        print(f"[INFO] В архиве найдено файлов: {len(documents)}", flush=True)
+        return documents
+
+
+class ComplectFolder:
+    """Папка, куда собирается комплект документов заявки."""
+
+    def __init__(self, results_path: Optional[str] = None, folder_name: str = None):
+        self.results_path = results_path or settings.results_root
+        self.folder_name = folder_name
+
+    @property
+    def path(self) -> Path:
+        folder = Path(self.results_path)
+        if self.folder_name:
+            folder = folder / self.folder_name
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def copy(self, source: Path) -> Optional[Path]:
+        """Копирует файл в папку комплекта. None — если скопировать не удалось."""
+        try:
+            destination = self._unique_path(self.path / source.name)
+            shutil.copy2(source, destination)
+            return destination
+        except OSError as exc:
+            print(f"[WARN] Не скопирован {source}: {exc}", flush=True)
+            return None
+
+    @staticmethod
+    def _unique_path(path: Path) -> Path:
+        """Не затираем уже скопированный файл — добавляем счётчик к имени.
+
+        Два требования перечня могут указывать на один и тот же файл архива.
+        """
+        if not path.exists():
+            return path
+        for i in range(1, 1000):
+            candidate = path.with_name(f"{path.stem}_{i}{path.suffix}")
+            if not candidate.exists():
+                return candidate
+        return path
+
+
+class ApplicationDocuments:
+    """Этап 2: собрать файлы документов из архива в папку заявки.
+
+    Оркестратор: для каждого требования перечня спросить у matcher подходящий
+    файл и передать его в комплект. Обход архива и копирование живут в
+    DocumentArchive и ComplectFolder.
+    """
+
     def __init__(
         self,
-        documents_path: str,
+        archive: DocumentArchive,
         documents_list: List[RequiredDocument],
         matcher: TitleMatcher,
-        result_folder_name: str,
-        results_path: Optional[str] = None,
+        complect: ComplectFolder = None,
         report: BaseReport = None,
     ):
-        self.report = report or ApplicationDocumentsReport()
-        self.result_folder_name = result_folder_name
-        self.matcher = matcher
+        self.archive = archive
         self.documents_list = documents_list
-        self.documents_path = documents_path
-        self.results_path = results_path or settings.results_root
+        self.matcher = matcher
+        self.complect = complect or ComplectFolder()
+        self.report = report or ApplicationDocumentsReport()
 
     def result_set(self) -> ApplicationDocumentsResult:
         """Ищет в архиве файлы по перечню документов и копирует их в папку заявки."""
-        available_documents = self._documents_in_path(self.documents_path)
-        target_folder = self._target_folder()
+        available_documents = self.archive.files()
 
-        rows: List[PreparedDocument] = []
-        for document in self.documents_list:
-            rows.append(
-                self._prepare_document(document, available_documents, target_folder)
-            )
+        rows = [
+            self._prepare_document(document, available_documents)
+            for document in self.documents_list
+        ]
 
         result = ApplicationDocumentsResult(
-            rows=rows, result_folder=str(target_folder)
+            rows=rows, result_folder=str(self.complect.path)
         )
         result.report_path = self.report.result(self._report_text(result))
 
         found = sum(1 for r in rows if r.status is DocumentStatus.FOUND)
         print(
-            f"[INFO] Подготовлено {found}/{len(rows)} документов в {target_folder}",
+            f"[INFO] Подготовлено {found}/{len(rows)} документов "
+            f"в {result.result_folder}",
             flush=True,
         )
         return result
 
-    # ── шаги ──────────────────────────────────────────────────────────────────
-
     def _prepare_document(
-        self,
-        document: RequiredDocument,
-        available_documents: dict,
-        target_folder: Path,
+        self, document: RequiredDocument, available_documents: dict
     ) -> PreparedDocument:
-        matched = self._search_in_files(document.name, list(available_documents))
+        matched = self.matcher.document_name(document.name, list(available_documents))
 
         if not matched["files"]:
             return PreparedDocument(
@@ -126,9 +200,7 @@ class ApplicationDocuments:
 
         copied = []
         for file_name in matched["files"]:
-            destination = self._copy_document(
-                available_documents[file_name], target_folder
-            )
+            destination = self.complect.copy(available_documents[file_name])
             if destination:
                 copied.append(destination.name)
 
@@ -148,59 +220,6 @@ class ApplicationDocuments:
             files=copied,
             note=matched["note"],
         )
-
-    def _documents_in_path(self, documents_path: str) -> dict:
-        """{имя файла: путь} по всем файлам архива, включая вложенные папки."""
-        root = Path(documents_path)
-        if not root.exists():
-            print(f"[WARN] Папка с документами не найдена: {documents_path}", flush=True)
-            return {}
-
-        documents = {}
-        for file in sorted(root.rglob("*")):
-            if not file.is_file() or file.name.startswith(self._SKIP_PREFIXES):
-                continue
-            # Одинаковые имена в разных подпапках: первый найденный выигрывает,
-            # остальные различаем относительным путём.
-            key = file.name
-            if key in documents:
-                key = str(file.relative_to(root))
-            documents[key] = file
-
-        print(f"[INFO] В архиве найдено файлов: {len(documents)}", flush=True)
-        return documents
-
-    def _search_in_files(self, document_name: str, documents: List[str]) -> dict:
-        """Подбор файла под документ через LLM."""
-        return self.matcher.document_name(document_name, documents)
-
-    def _copy_document(self, source: Path, target_folder: Path) -> Optional[Path]:
-        try:
-            target_folder.mkdir(parents=True, exist_ok=True)
-            destination = self._unique_path(target_folder / source.name)
-            shutil.copy2(source, destination)
-            return destination
-        except OSError as exc:
-            print(f"[WARN] Не скопирован {source}: {exc}", flush=True)
-            return None
-
-    def _target_folder(self) -> Path:
-        folder = Path(self.results_path)
-        if self.result_folder_name:
-            folder = folder / self.result_folder_name
-        folder.mkdir(parents=True, exist_ok=True)
-        return folder
-
-    @staticmethod
-    def _unique_path(path: Path) -> Path:
-        """Не затираем уже скопированный файл — добавляем счётчик к имени."""
-        if not path.exists():
-            return path
-        for i in range(1, 1000):
-            candidate = path.with_name(f"{path.stem}_{i}{path.suffix}")
-            if not candidate.exists():
-                return candidate
-        return path
 
     @staticmethod
     def _report_text(result: ApplicationDocumentsResult) -> str:

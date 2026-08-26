@@ -72,25 +72,48 @@
 
 ### Этап 3. Подготовка заявки
 
-Шаблон заявки приводится к markdown, и модель выделяет поля, которые нужно
-заполнить: пустые ячейки таблиц, прочерки, подчёркивания, места вида «указать …».
+Материалы для заполнения — база знаний (эталонные заявки, реквизиты) плюс
+требования тендера: часть данных заявки содержится именно в файле требований
+из этапа 1.
 
-Каждое поле заполняется отдельным запросом по общему контексту — база знаний
-(эталонные заявки, реквизиты) плюс требования тендера: часть данных заявки
-содержится именно в файле требований из этапа 1.
+Шаблон заполняется **двумя независимыми заполнителями**, потому что поля в
+формах устроены принципиально по-разному:
 
-Значения вписываются **в исходный файл шаблона**, а не в новый документ:
-Word — заливкой ячейки и подсветкой текста, Excel — заливкой ячейки.
+1. **Построчный** (`AITenderForm`) — «метка в одной ячейке, значение в
+   соседней». Шаблон приводится к markdown, модель выделяет поля, каждое
+   заполняется отдельным запросом.
+2. **Инлайн-пропуски** (`InlineBlanksForm`) — несколько разных по смыслу
+   пропусков внутри одного абзаца:
+
+   > 15.1 `___` (наименование участника закупки) имеет право на ведение
+   > деятельности в соответствии с законодательством `___` (наименование
+   > государства по месту нахождения) и `___` (наименование государства по
+   > месту исполнения договора).
+
+   В плоском markdown такие пропуски неразличимы, поэтому детектор работает
+   по объектной модели docx и адресует каждый отдельно. Метка поля берётся
+   из поясняющей скобки справа от пропуска. Все пропуски шаблона уходят
+   **одним пакетным запросом**: их бывает больше десятка, а по вызову на
+   каждый — столько же сетевых round-trip'ов даже при включённом кэше.
+
+Оба заполнителя складываются через `CompositeTenderForm` — включить или
+выключить любой из них значит добавить или не добавить его в композицию.
+
+**Текст шаблона не переписывается.** Значения пишутся в отдельное поле:
+построчные — в ячейку значения, инлайн-пропуски — в колонку справа от текста
+требования, под подсказку шаблона («Да» / «Нет»). Формулировки требований и
+сами `___` остаются нетронутыми — правка в тексте была бы незаметной при
+вычитке. Переносит значения в текст человек.
 
 | Цвет | Статус | Значение |
 | --- | --- | --- |
 | 🟢 Зелёный | `found` | Найдено дословно и однозначно |
 | 🟡 Жёлтый | `check` | Найдено косвенно, устарело или есть варианты — проверить |
-| 🔴 Красный | `missing` | Информации нет; в документ вписывается `НЕ НАЙДЕНО` |
+| 🔴 Красный | `missing` | Информации нет; пишется `НЕ НАЙДЕНО` |
 
-Поля, которым не нашлось места в шаблоне, выносятся отдельным блоком в конец
-файла — они не теряются. Шаблон в PDF заполнить нельзя, поэтому для него
-результат выгружается в отдельный `.docx`.
+Поля, которым не нашлось места (нет ячейки справа, не сошёлся якорь),
+выносятся отдельным блоком в конец файла — они не теряются. Шаблон в PDF
+заполнить нельзя, поэтому для него результат выгружается в отдельный `.docx`.
 
 ---
 
@@ -220,7 +243,7 @@ tender_assistant/
 ├── documents/
 │   ├── document_list.py         Этап 1: разделы → перечень → проверка по норме
 │   └── application_documents.py Этап 2: поиск файлов и сбор комплекта
-├── application/application.py   Этап 3: разбор шаблона и заполнение полей
+├── application/application.py   Этап 3: шаблон, материалы, заполнители, сохранение
 ├── ai/
 │   ├── model.py                 Провайдеры LLM + retry-логика, ModelFactory
 │   ├── promt_builders.py        Сборка промпта, загрузка базы знаний
@@ -242,6 +265,307 @@ tests/
 ├── unit/                        Модульные тесты по слоям
 └── integration/                 Сквозной пайплайн, HTTP API, отрисовка GUI
 ```
+
+## Диаграммы классов
+
+Общий принцип на всех этапах: **класс этапа — оркестратор**, он вызывает
+интерфейсы и сам не работает с документами. Зависимости передаются в
+конструктор, поэтому любую составляющую можно подменить (чем и пользуются
+тесты, подставляя фиктивную LLM вместо настоящей).
+
+### Общая инфраструктура
+
+Эти интерфейсы используют все три этапа.
+
+```mermaid
+classDiagram
+    class AIModel {
+        <<interface>>
+        +supports_prompt_caching: bool
+        +response(query) str
+        +response_with_cache(cache_prefix, query) str
+    }
+    class ModelFactory {
+        <<factory>>
+        +create()$ AIModel
+    }
+    class PostProcessor {
+        <<interface>>
+        +report(raw_text) Any
+    }
+    class PromptEngine {
+        +render(template, fit_key, fit_query, values) str
+    }
+    class DataParser {
+        +origin_data() str
+    }
+    class BaseReport {
+        +result(report_text) str
+    }
+    class ReportWriter {
+        <<interface>>
+        +write(data, output_path, source_path) Path
+    }
+
+    ModelFactory ..> AIModel : создаёт
+    AIModel <|-- ServiceLLMModel
+    ServiceLLMModel <|-- GeminiModel
+    ServiceLLMModel <|-- AnthropicModel
+    AIModel <|-- OllamaModel
+    AIModel <|-- QwenModel
+    AIModel <|-- VskAIModel
+
+    PostProcessor <|-- SectionsMatcherResponse
+    PostProcessor <|-- DocumentListResponse
+    PostProcessor <|-- NormativeFilterResponse
+    PostProcessor <|-- TitleMatcherPostProcessor
+    PostProcessor <|-- FormFieldsResponse
+    PostProcessor <|-- TenderRowPostProcessor
+    PostProcessor <|-- InlineBlanksResponse
+
+    Parser <|-- Word
+    Parser <|-- Excel
+    Parser <|-- PDF
+    DataParser o-- Parser
+
+    BaseReport <|-- DocumentListReport
+    BaseReport <|-- ApplicationDocumentsReport
+    BaseReport <|-- TenderApplicationReport
+
+    ReportWriter <|-- WordApplicationWriter
+    ReportWriter <|-- ExcelApplicationWriter
+    ReportWriter <|-- TenderReportWriter
+    ReportWriter <|-- DocumentListWriter
+```
+
+`AnthropicModel` — единственная реализация с `supports_prompt_caching = True`;
+у остальных `response_with_cache` по умолчанию просто склеивает префикс с
+запросом (см. «Стоимость этапа 3»).
+
+### Этап 1. Перечень документов
+
+```mermaid
+classDiagram
+    class DocumentList {
+        <<оркестратор>>
+        +result() DocumentListResult
+    }
+    class DocumentListExtractor {
+        +extract() ExtractedDocuments
+    }
+    class ExtractedDocuments {
+        +headers: List~str~
+        +documents: List~dict~
+    }
+    class DocumentListOutput {
+        +save(result) Path
+    }
+    class DocumentSections {
+        +markdown: str
+        +outline: MarkdownOutline
+        +sections_list() str
+        +has_headings() bool
+        +section_text(header_name) str
+    }
+    class SectionsMatcher {
+        +result(text_headers) List~str~
+    }
+    class ContextMatcher {
+        +result(section_text) List~dict~
+    }
+    class NormativeChecker {
+        +base_text: str
+        +result(documents) dict
+    }
+    class MarkdownOutline {
+        +has_headings: bool
+        +as_list() str
+        +find(title) Section
+    }
+    class DocumentListResult {
+        +documents: List~RequiredDocument~
+        +excluded: List~RequiredDocument~
+        +report_path: str
+        +formatted_path: str
+    }
+
+    DocumentList o-- DocumentListExtractor
+    DocumentList o-- NormativeChecker
+    DocumentList o-- DocumentListOutput
+    DocumentList o-- BaseReport : markdown-отчёт
+    DocumentList ..> DocumentListResult : возвращает
+
+    DocumentListExtractor o-- DocumentSections
+    DocumentListExtractor o-- SectionsMatcher
+    DocumentListExtractor o-- ContextMatcher
+    DocumentListExtractor ..> ExtractedDocuments : возвращает
+
+    DocumentListOutput o-- ReportWriter : DocumentListWriter
+
+    DocumentSections o-- DataParser
+    DocumentSections ..> MarkdownOutline
+
+    SectionsMatcher o-- AIModel
+    SectionsMatcher o-- PostProcessor
+    SectionsMatcher o-- PromptEngine
+    ContextMatcher o-- AIModel
+    ContextMatcher o-- PostProcessor
+    ContextMatcher o-- PromptEngine
+    NormativeChecker o-- AIModel
+    NormativeChecker o-- PostProcessor
+    NormativeChecker o-- NormativeBaseLoader
+```
+
+`DocumentListExtractor` объединяет три шага схемы работы — найти заголовки,
+выбрать раздел про документы, прочитать его. Порознь они бессмысленны:
+результат каждого нужен только следующему.
+
+### Этап 2. Подготовка документов
+
+```mermaid
+classDiagram
+    class ApplicationDocuments {
+        <<оркестратор>>
+        +result_set() ApplicationDocumentsResult
+    }
+    class DocumentArchive {
+        +files() dict
+    }
+    class ComplectFolder {
+        +path: Path
+        +copy(source) Path
+    }
+    class TitleMatcher {
+        +document_name(target_name, name_list) dict
+    }
+    class ApplicationDocumentsResult {
+        +rows: List~PreparedDocument~
+        +result_folder: str
+        +report_path: str
+    }
+    class PreparedDocument {
+        +name: str
+        +status: DocumentStatus
+        +files: List~str~
+    }
+    class DocumentStatus {
+        <<enumeration>>
+        FOUND
+        CHECK
+        MISSING
+    }
+
+    ApplicationDocuments o-- DocumentArchive
+    ApplicationDocuments o-- TitleMatcher
+    ApplicationDocuments o-- ComplectFolder
+    ApplicationDocuments o-- BaseReport
+    ApplicationDocuments ..> ApplicationDocumentsResult : возвращает
+    ApplicationDocumentsResult *-- PreparedDocument
+    PreparedDocument o-- DocumentStatus
+
+    TitleMatcher o-- AIModel
+    TitleMatcher o-- PostProcessor
+    TitleMatcher o-- PromptEngine
+```
+
+### Этап 3. Подготовка заявки
+
+```mermaid
+classDiagram
+    class TenderApplication {
+        <<оркестратор>>
+        +result() TenderApplicationResult
+    }
+    class FormTemplate {
+        +path: Path
+        +is_word: bool
+        +markdown: str
+        +document: Document
+    }
+    class ApplicationContext {
+        <<interface>>
+        +build() str
+    }
+    class KnowledgeBaseContext {
+        +build() str
+    }
+    class TenderForm {
+        <<interface>>
+        +prepare(template, context) List~FilledField~
+    }
+    class AITenderForm {
+        +prepare(template, context) List~FilledField~
+    }
+    class InlineBlanksForm {
+        +prepare(template, context) List~FilledField~
+    }
+    class CompositeTenderForm {
+        +prepare(template, context) List~FilledField~
+    }
+    class TenderQuery {
+        <<interface>>
+        +result(field_label, context) dict
+    }
+    class TenderAIQuery {
+        +result(field_label, context) dict
+    }
+    class InlineBlanksQuery {
+        +result(blanks, context) dict
+    }
+    class ApplicationOutput {
+        +save(template, fields) Path
+    }
+    class InlineBlank {
+        +id: int
+        +label: str
+        +cell
+        +row_cells
+        +cell_index: int
+    }
+    class FilledField {
+        +label: str
+        +anchor: str
+        +kind: str
+        +value: str
+        +status: FieldStatus
+    }
+
+    TenderApplication o-- FormTemplate
+    TenderApplication o-- ApplicationContext
+    TenderApplication o-- TenderForm
+    TenderApplication o-- ApplicationOutput
+    TenderApplication o-- BaseReport
+    TenderApplication ..> TenderApplicationResult : возвращает
+
+    ApplicationContext <|-- KnowledgeBaseContext
+    KnowledgeBaseContext o-- NormativeBaseLoader
+    KnowledgeBaseContext ..> DataParser
+
+    TenderForm <|-- AITenderForm
+    TenderForm <|-- InlineBlanksForm
+    TenderForm <|-- CompositeTenderForm
+    CompositeTenderForm o-- TenderForm : композиция
+
+    AITenderForm o-- TenderQuery
+    AITenderForm o-- PostProcessor
+    InlineBlanksForm o-- InlineBlanksQuery
+    InlineBlanksForm ..> InlineBlank : find_inline_blanks()
+
+    TenderQuery <|-- TenderAIQuery
+    TenderQuery <|-- InlineBlanksQuery
+    TenderAIQuery o-- AIModel
+    TenderAIQuery o-- PromptEngine
+    InlineBlanksQuery o-- AIModel
+    InlineBlanksQuery o-- PromptEngine
+
+    ApplicationOutput o-- ReportWriter
+    TenderForm ..> FilledField : возвращает
+```
+
+Ключевое здесь — `CompositeTenderForm`, реализующий тот же `TenderForm`, что и
+его составляющие: оркестратор видит один заполнитель и не знает, что внутри их
+два. Список полей от обоих складывается и уходит в `ApplicationOutput` единым
+набором.
 
 ## Тесты
 
@@ -322,6 +646,11 @@ content-блоком с `cache_control`: первый вызов — по пол
 | Поддержать новый формат файлов | Реализовать `Parser` в `core/parsers.py` и добавить расширение в `DataParser._SUPPORTED` |
 | Изменить формат заполнения заявки | Реализовать `ReportWriter` в `reports/writers.py` и зарегистрировать в `TenderReportWriter._WRITERS` |
 | Добавить формат оформленного перечня документов (например, Excel) | Реализовать `ReportWriter` в `reports/writers.py` по образцу `DocumentListWriter` и передать в `DocumentList(writer=...)` |
+| Научиться распознавать поля нового вида | Реализовать `TenderForm` в `application/application.py` и добавить в `CompositeTenderForm` (в `services/assistant.py`) — существующие заполнители трогать не нужно |
+| Брать документы не из папки (S3, СЭД) | Реализовать `files()` по образцу `DocumentArchive` и передать в `ApplicationDocuments(archive=...)` |
+| Собирать комплект иначе (архив, загрузка) | Реализовать `path`/`copy()` по образцу `ComplectFolder` и передать в `ApplicationDocuments(complect=...)` |
+| Взять материалы из другого источника (CRM, БД) | Реализовать `ApplicationContext.build()` в `application/application.py` и передать в `TenderApplication(context=...)` |
+| Отключить заполнитель | Убрать его из списка `CompositeTenderForm` — флагов и `if` внутри оркестратора для этого нет |
 | Поправить поведение модели | Промпты собраны в `core/config.py` — код менять не нужно |
 
 Этапы связаны только через оркестратор `TenderAssistantService`; зависимости

@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -183,55 +184,37 @@ class NormativeChecker:
         return checked
 
 
-class DocumentList:
-    """Этап 1: получить перечень документов, необходимых для заявки."""
+@dataclass
+class ExtractedDocuments:
+    """Сырой результат разбора требований: что нашли и откуда."""
+
+    headers: List[str]
+    documents: List[dict]
+
+
+class DocumentListExtractor:
+    """Достаёт перечень документов из требований тендера.
+
+    Три шага схемы работы — найти заголовки, выбрать раздел про документы,
+    прочитать его — вместе, потому что порознь они бессмысленны: результат
+    каждого нужен только следующему. Наружу отдаётся один вызов ``extract()``.
+    """
 
     def __init__(
         self,
-        report: BaseReport,
         document_sections: DocumentSections,
         sections_matcher: SectionsMatcher,
         context_matcher: ContextMatcher,
-        normative_checker: NormativeChecker = None,
-        writer: ReportWriter = None,
-        results_path: Optional[str] = None,
     ):
-        self.context_matcher = context_matcher
-        self.sections_matcher = sections_matcher
         self.document_sections = document_sections
-        self.normative_checker = normative_checker
-        self.report = report or DocumentListReport()
-        self.writer = writer or DocumentListWriter()
-        self.results_path = results_path or settings.results_root
+        self.sections_matcher = sections_matcher
+        self.context_matcher = context_matcher
 
-    def result(self) -> DocumentListResult:
-        """Читает документ, находит раздел с перечнем документов и разбирает его.
-
-        Если заголовков в документе нет, раздел не ищется — документ читается
-        целиком. Полученный перечень проверяется по нормативной базе.
-        """
+    def extract(self) -> ExtractedDocuments:
         headers = self._find_headers()
-        raw_documents = self._collect_documents(headers)
-        checked = self._check_by_normative(raw_documents)
-
-        result = DocumentListResult(
-            documents=[RequiredDocument(**d) for d in checked["documents"]],
-            excluded=[RequiredDocument(**d) for d in checked["excluded"]],
-            source_headers=headers,
+        return ExtractedDocuments(
+            headers=headers, documents=self._collect_documents(headers)
         )
-
-        result.report_path = self.report.result(self._report_text(result))
-        result.formatted_path = str(self.writer.write(result, self._formatted_output_path()))
-        print(
-            f"[INFO] Итоговый перечень документов: {len(result.documents)} шт. "
-            f"(отброшено {len(result.excluded)})",
-            flush=True,
-        )
-        return result
-
-    def _formatted_output_path(self) -> Path:
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return Path(self.results_path) / f"Перечень документов_{stamp}.docx"
 
     def _find_headers(self) -> List[str]:
         if not self.document_sections.has_headings():
@@ -263,6 +246,59 @@ class DocumentList:
             return self.context_matcher.result(self.document_sections.markdown)
 
         return collected
+
+
+class DocumentListOutput:
+    """Куда и чем сохраняется оформленный перечень документов."""
+
+    def __init__(self, results_path: Optional[str] = None, writer: ReportWriter = None):
+        self.results_path = results_path or settings.results_root
+        self.writer = writer or DocumentListWriter()
+
+    def save(self, result: DocumentListResult) -> Path:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output = Path(self.results_path) / f"Перечень документов_{stamp}.docx"
+        return self.writer.write(result, output)
+
+
+class DocumentList:
+    """Этап 1: получить перечень документов, необходимых для заявки.
+
+    Оркестратор: извлечь перечень → проверить по нормативной базе → сохранить.
+    Чтение документа и запись файлов живут в DocumentListExtractor и
+    DocumentListOutput.
+    """
+
+    def __init__(
+        self,
+        extractor: DocumentListExtractor,
+        normative_checker: NormativeChecker = None,
+        output: DocumentListOutput = None,
+        report: BaseReport = None,
+    ):
+        self.extractor = extractor
+        self.normative_checker = normative_checker
+        self.output = output or DocumentListOutput()
+        self.report = report or DocumentListReport()
+
+    def result(self) -> DocumentListResult:
+        extracted = self.extractor.extract()
+        checked = self._check_by_normative(extracted.documents)
+
+        result = DocumentListResult(
+            documents=[RequiredDocument(**d) for d in checked["documents"]],
+            excluded=[RequiredDocument(**d) for d in checked["excluded"]],
+            source_headers=extracted.headers,
+        )
+
+        result.report_path = self.report.result(self._report_text(result))
+        result.formatted_path = str(self.output.save(result))
+        print(
+            f"[INFO] Итоговый перечень документов: {len(result.documents)} шт. "
+            f"(отброшено {len(result.excluded)})",
+            flush=True,
+        )
+        return result
 
     def _check_by_normative(self, documents: List[dict]) -> dict:
         if self.normative_checker is None:

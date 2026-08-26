@@ -7,6 +7,8 @@ from tender_assistant.core.parsers import DataParser
 from tender_assistant.documents.document_list import (
     ContextMatcher,
     DocumentList,
+    DocumentListExtractor,
+    DocumentListOutput,
     DocumentSections,
     NormativeChecker,
     SectionsMatcher,
@@ -87,11 +89,13 @@ class TestSectionsMatcher:
             ),
         })
         result = DocumentList(
+            extractor=DocumentListExtractor(
+                document_sections=sections,
+                sections_matcher=SectionsMatcher(ai_model=model),
+                context_matcher=ContextMatcher(ai_model=model),
+            ),
+            output=DocumentListOutput(results_path=str(results_dir)),
             report=DocumentListReport(output_dir=str(results_dir)),
-            results_path=str(results_dir),
-            document_sections=sections,
-            sections_matcher=SectionsMatcher(ai_model=model),
-            context_matcher=ContextMatcher(ai_model=model),
         ).result()
 
         assert [d.name for d in result.documents] == ["Устав"]
@@ -175,21 +179,37 @@ class TestNormativeChecker:
 
 
 class TestDocumentList:
+    """Оркестратор: извлечь → проверить по норме → сохранить.
+
+    Чтение требований и запись файлов живут в DocumentListExtractor
+    и DocumentListOutput.
+    """
+
     def _build(self, sections, model, results_dir, normative_folder=None):
         return DocumentList(
-            report=DocumentListReport(output_dir=str(results_dir)),
-            results_path=str(results_dir),
-            document_sections=sections,
-            sections_matcher=SectionsMatcher(
-                ai_model=model, response_post_processor=SectionsMatcherResponse()
-            ),
-            context_matcher=ContextMatcher(
-                ai_model=model, response_post_processor=DocumentListResponse()
+            extractor=DocumentListExtractor(
+                document_sections=sections,
+                sections_matcher=SectionsMatcher(
+                    ai_model=model, response_post_processor=SectionsMatcherResponse()
+                ),
+                context_matcher=ContextMatcher(
+                    ai_model=model, response_post_processor=DocumentListResponse()
+                ),
             ),
             normative_checker=NormativeChecker(
                 ai_model=model, normative_base_folder=normative_folder
             ) if normative_folder else None,
+            output=DocumentListOutput(results_path=str(results_dir)),
+            report=DocumentListReport(output_dir=str(results_dir)),
         )
+
+    def test_takes_at_most_five_constructor_parameters(self):
+        """Оркестратор не должен обрастать параметрами: всё, что сверх
+        композиции зависимостей, — признак утёкшей в него работы."""
+        import inspect
+
+        parameters = inspect.signature(DocumentList.__init__).parameters
+        assert len(parameters) - 1 <= 5  # без self
 
     def test_happy_path(self, sections, scripted_model, results_dir, normative_dir):
         result = self._build(

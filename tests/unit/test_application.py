@@ -8,12 +8,17 @@ from docx import Document
 
 from tender_assistant.application.application import (
     AITenderForm,
+    ApplicationOutput,
+    CompositeTenderForm,
+    FormTemplate,
+    InlineBlanksForm,
     InlineBlanksQuery,
+    KnowledgeBaseContext,
     TenderAIQuery,
     TenderApplication,
 )
 from tender_assistant.core.parsers import find_inline_blanks
-from tender_assistant.core.pydantic_models import FieldStatus
+from tender_assistant.core.pydantic_models import FieldStatus, FilledField
 from tender_assistant.reports.report_export import TenderApplicationReport
 from tests.fakes import BrokenModel, CachingScriptedModel, Marker, ScriptedModel, as_json
 
@@ -168,10 +173,185 @@ class TestInlineBlanksQuery:
         assert answers["1"]["value"] == "X"
 
 
+class FakeTemplate:
+    """Двойник FormTemplate: markdown задаётся напрямую, файл не нужен.
+
+    Построчному заполнителю от шаблона нужен только текст — писать и
+    разбирать .docx ради этого в каждом тесте незачем.
+    """
+
+    def __init__(self, markdown: str = "шаблон"):
+        self.markdown = markdown
+        self.is_word = False
+        self.document = None
+        self.path = Path("form.docx")
+
+
+class TestFormTemplate:
+    """Шаблон отдаёт оба представления и читает файл не чаще одного раза."""
+
+    def test_markdown_is_parsed_from_the_file(self, template_docx):
+        assert "Полное наименование участника" in FormTemplate(str(template_docx)).markdown
+
+    def test_markdown_is_cached(self, template_docx):
+        template = FormTemplate(str(template_docx))
+        assert template.markdown is template.markdown
+
+    def test_document_is_cached(self, template_docx):
+        template = FormTemplate(str(template_docx))
+        assert template.document is template.document
+
+    def test_word_template_is_recognised(self, template_docx):
+        assert FormTemplate(str(template_docx)).is_word
+
+    def test_non_word_template_is_recognised(self, tmp_path):
+        path = tmp_path / "form.xlsx"
+        path.write_text("stub", encoding="utf-8")
+        assert not FormTemplate(str(path)).is_word
+
+    def test_path_is_exposed_for_the_writer(self, template_docx):
+        assert FormTemplate(str(template_docx)).path == Path(str(template_docx))
+
+
+class TestKnowledgeBaseContext:
+    def test_both_sources_are_included(self, requirements_docx, knowledge_dir):
+        context = KnowledgeBaseContext(
+            tender_info_path=str(requirements_docx),
+            knowledge_base_folder=str(knowledge_dir),
+        ).build()
+
+        assert "БАЗА ЗНАНИЙ И ЭТАЛОННЫЕ ЗАЯВКИ" in context
+        assert "7701234567" in context
+        assert "ТРЕБОВАНИЯ ТЕНДЕРА" in context
+        assert "Состав заявки участника" in context
+
+    def test_unreadable_tender_info_is_survivable(self, knowledge_dir, tmp_path):
+        """Заявку всё равно нужно заполнить тем, что есть в базе знаний."""
+        context = KnowledgeBaseContext(
+            tender_info_path=str(tmp_path / "нет.docx"),
+            knowledge_base_folder=str(knowledge_dir),
+        ).build()
+
+        assert "БАЗА ЗНАНИЙ И ЭТАЛОННЫЕ ЗАЯВКИ" in context
+        assert "ТРЕБОВАНИЯ ТЕНДЕРА" not in context
+
+    def test_missing_knowledge_base_is_survivable(self, requirements_docx, tmp_path):
+        context = KnowledgeBaseContext(
+            tender_info_path=str(requirements_docx),
+            knowledge_base_folder=str(tmp_path / "нет-базы"),
+        ).build()
+
+        assert "ТРЕБОВАНИЯ ТЕНДЕРА" in context
+        assert "БАЗА ЗНАНИЙ" not in context
+
+    def test_nothing_available_yields_empty_context(self, tmp_path):
+        assert KnowledgeBaseContext(None, None).build() == ""
+
+
+class TestCompositeTenderForm:
+    """Композиция заполнителей: один шаблон, несколько независимых путей."""
+
+    class _StubForm:
+        def __init__(self, fields):
+            self._fields = fields
+            self.calls = []
+
+        def prepare(self, template, context):
+            self.calls.append((template, context))
+            return list(self._fields)
+
+    def test_results_are_concatenated_in_order(self):
+        first = self._StubForm([FilledField(label="А"), FilledField(label="Б")])
+        second = self._StubForm([FilledField(label="В")])
+
+        fields = CompositeTenderForm([first, second]).prepare(FakeTemplate(), "к")
+
+        assert [f.label for f in fields] == ["А", "Б", "В"]
+
+    def test_every_form_sees_the_same_template_and_context(self):
+        first, second = self._StubForm([]), self._StubForm([])
+        template = FakeTemplate()
+
+        CompositeTenderForm([first, second]).prepare(template, "материалы")
+
+        assert first.calls == second.calls == [(template, "материалы")]
+
+    def test_empty_composition(self):
+        assert CompositeTenderForm([]).prepare(FakeTemplate(), "к") == []
+
+
+class TestInlineBlanksForm:
+    def test_non_word_template_is_skipped(self):
+        """У не-Word шаблона нет объектной модели docx — разбирать нечего."""
+        model = ScriptedModel({})
+        form = InlineBlanksForm(inline_query=InlineBlanksQuery(ai_model=model))
+
+        assert form.prepare(FakeTemplate(), "контекст") == []
+        assert model.calls == []
+
+    def test_template_without_blanks_skips_the_model(self, template_docx):
+        model = ScriptedModel({})
+        form = InlineBlanksForm(inline_query=InlineBlanksQuery(ai_model=model))
+
+        assert form.prepare(FormTemplate(str(template_docx)), "контекст") == []
+        assert model.calls == []
+
+    def test_blanks_become_inline_fields(self, tmp_path):
+        path = tmp_path / "form.docx"
+        _multi_blank_docx(path)
+
+        model = ScriptedModel({Marker.INLINE_BLANKS: as_json({
+            "1": {"value": "САО «ВСК»", "status": "found", "source": "", "note": ""},
+            "2": {"value": "Россия", "status": "check", "source": "", "note": ""},
+        })})
+        form = InlineBlanksForm(inline_query=InlineBlanksQuery(ai_model=model))
+
+        fields = form.prepare(FormTemplate(str(path)), "контекст")
+
+        assert [f.kind for f in fields] == ["inline", "inline"]
+        assert [f.anchor for f in fields] == ["1", "2"]
+        assert fields[0].value == "САО «ВСК»"
+        assert fields[1].status is FieldStatus.CHECK
+
+    def test_blank_without_an_answer_is_marked_missing(self, tmp_path):
+        """Модель вернула не все ключи — пропуск не теряется, а помечается."""
+        path = tmp_path / "form.docx"
+        _multi_blank_docx(path)
+
+        model = ScriptedModel({Marker.INLINE_BLANKS: as_json({
+            "1": {"value": "САО «ВСК»", "status": "found", "source": "", "note": ""},
+        })})
+        form = InlineBlanksForm(inline_query=InlineBlanksQuery(ai_model=model))
+
+        fields = form.prepare(FormTemplate(str(path)), "контекст")
+
+        assert len(fields) == 2
+        assert fields[1].status is FieldStatus.MISSING
+
+
+class TestApplicationOutput:
+    def test_output_name_is_derived_from_the_template(self, template_docx, results_dir):
+        path = ApplicationOutput(results_path=str(results_dir)).save(
+            FormTemplate(str(template_docx)),
+            [FilledField(label="ИНН", value="7701234567", status=FieldStatus.FOUND)],
+        )
+
+        assert path.name == "form_заполнено.docx"
+        assert path.parent == results_dir
+        assert path.exists()
+
+    def test_template_is_not_modified_in_place(self, template_docx, results_dir):
+        before = template_docx.read_bytes()
+        ApplicationOutput(results_path=str(results_dir)).save(
+            FormTemplate(str(template_docx)), []
+        )
+        assert template_docx.read_bytes() == before
+
+
 class TestAITenderForm:
     def test_extracts_fields_and_fills_them(self, scripted_model):
         form = AITenderForm(tender_query=TenderAIQuery(ai_model=scripted_model))
-        fields = form.prepare("| ИНН | |", "контекст")
+        fields = form.prepare(FakeTemplate("| ИНН | |"), "контекст")
 
         assert [f.label for f in fields] == [
             "Полное наименование участника", "ИНН", "Юридический адрес",
@@ -181,7 +361,9 @@ class TestAITenderForm:
 
     def test_statuses_are_mapped(self, scripted_model):
         form = AITenderForm(tender_query=TenderAIQuery(ai_model=scripted_model))
-        statuses = {f.label: f.status for f in form.prepare("шаблон", "контекст")}
+        statuses = {
+            f.label: f.status for f in form.prepare(FakeTemplate(), "контекст")
+        }
 
         assert statuses["ИНН"] is FieldStatus.FOUND
         assert statuses["Юридический адрес"] is FieldStatus.CHECK
@@ -189,14 +371,14 @@ class TestAITenderForm:
 
     def test_one_model_call_per_field(self, scripted_model):
         form = AITenderForm(tender_query=TenderAIQuery(ai_model=scripted_model))
-        form.prepare("шаблон", "контекст")
+        form.prepare(FakeTemplate(), "контекст")
 
         assert scripted_model.call_count(Marker.FORM_FIELDS) == 1
         assert scripted_model.call_count(Marker.FIELD_VALUE) == 5
 
     def test_template_reaches_the_extraction_prompt(self, scripted_model):
         form = AITenderForm(tender_query=TenderAIQuery(ai_model=scripted_model))
-        form.prepare("| Уникальная строка шаблона | |", "контекст")
+        form.prepare(FakeTemplate("| Уникальная строка шаблона | |"), "контекст")
 
         assert "Уникальная строка шаблона" in scripted_model.last_call(Marker.FORM_FIELDS)
 
@@ -204,7 +386,7 @@ class TestAITenderForm:
         model = ScriptedModel({Marker.FORM_FIELDS: as_json({"fields": []})})
         form = AITenderForm(tender_query=TenderAIQuery(ai_model=model))
 
-        assert form.prepare("шаблон", "контекст") == []
+        assert form.prepare(FakeTemplate(), "контекст") == []
         assert model.call_count(Marker.FIELD_VALUE) == 0
 
     def test_model_is_required_for_extraction(self):
@@ -214,19 +396,38 @@ class TestAITenderForm:
 
         form = AITenderForm(tender_query=QueryWithoutModel())
         with pytest.raises(RuntimeError, match="модель"):
-            form.prepare("шаблон", "контекст")
+            form.prepare(FakeTemplate(), "контекст")
 
 
 class TestTenderApplication:
-    def _build(self, template, requirements, knowledge, results_dir, model):
+    """Оркестратор: собрать материалы → отдать заполнителю → сохранить → отчёт.
+
+    Сам он документы не читает и не пишет — это делают FormTemplate,
+    KnowledgeBaseContext, TenderForm и ApplicationOutput.
+    """
+
+    def _build(self, template, requirements, knowledge, results_dir, model,
+               tender_form=None):
         return TenderApplication(
-            application_template_path=str(template),
-            tender_info_path=str(requirements),
-            normative_base_folder=str(knowledge),
-            tender_form=AITenderForm(tender_query=TenderAIQuery(ai_model=model)),
+            template=FormTemplate(str(template)),
+            context=KnowledgeBaseContext(
+                tender_info_path=str(requirements),
+                knowledge_base_folder=str(knowledge),
+            ),
+            tender_form=tender_form or AITenderForm(
+                tender_query=TenderAIQuery(ai_model=model)
+            ),
+            output=ApplicationOutput(results_path=str(results_dir)),
             report=TenderApplicationReport(output_dir=str(results_dir)),
-            results_path=str(results_dir),
         )
+
+    def test_takes_at_most_five_constructor_parameters(self):
+        """Оркестратор не должен обрастать параметрами: всё, что сверх
+        композиции зависимостей, — признак утёкшей в него работы."""
+        import inspect
+
+        parameters = inspect.signature(TenderApplication.__init__).parameters
+        assert len(parameters) - 1 <= 5  # без self
 
     def test_fills_template_and_saves_it(
         self, template_docx, requirements_docx, knowledge_dir, results_dir, scripted_model
@@ -325,17 +526,13 @@ class TestTenderApplication:
             }),
         })
 
-        application = TenderApplication(
-            application_template_path=str(template),
-            tender_info_path=str(requirements_docx),
-            normative_base_folder=str(knowledge_dir),
-            tender_form=AITenderForm(tender_query=TenderAIQuery(ai_model=model)),
-            report=TenderApplicationReport(output_dir=str(results_dir)),
-            results_path=str(results_dir),
-            inline_query=InlineBlanksQuery(ai_model=model),
-        )
-
-        result = application.result()
+        result = self._build(
+            template, requirements_docx, knowledge_dir, results_dir, model,
+            tender_form=CompositeTenderForm([
+                AITenderForm(tender_query=TenderAIQuery(ai_model=model)),
+                InlineBlanksForm(inline_query=InlineBlanksQuery(ai_model=model)),
+            ]),
+        ).result()
 
         statuses = {f.anchor: f.status for f in result.fields if f.kind == "inline"}
         assert len(statuses) == 2
@@ -347,25 +544,18 @@ class TestTenderApplication:
         assert "Россия" in row.cells[1].text
         assert "___" in row.cells[0].text
 
-    def test_without_inline_query_only_old_mechanism_runs(
+    def test_form_not_in_the_composition_does_not_run(
         self, requirements_docx, knowledge_dir, results_dir, tmp_path
     ):
-        """inline_query не задан (по умолчанию None) — поведение как раньше,
-        никакой попытки разобрать инлайн-пропуски."""
+        """Заполнитель пропусков не включён в композицию — шаблон с
+        пропусками остаётся неразобранным, лишних вызовов модели нет."""
         template = tmp_path / "multi_blank_form.docx"
         _multi_blank_docx(template)
 
         model = ScriptedModel({Marker.FORM_FIELDS: as_json({"fields": []})})
-        application = TenderApplication(
-            application_template_path=str(template),
-            tender_info_path=str(requirements_docx),
-            normative_base_folder=str(knowledge_dir),
-            tender_form=AITenderForm(tender_query=TenderAIQuery(ai_model=model)),
-            report=TenderApplicationReport(output_dir=str(results_dir)),
-            results_path=str(results_dir),
-        )
-
-        result = application.result()
+        result = self._build(
+            template, requirements_docx, knowledge_dir, results_dir, model
+        ).result()
 
         assert result.fields == []
         assert model.call_count(Marker.INLINE_BLANKS) == 0
