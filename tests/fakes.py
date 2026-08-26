@@ -65,6 +65,26 @@ class ScriptedModel(AIModel):
         return calls[-1]
 
 
+class CachingScriptedModel(ScriptedModel):
+    """ScriptedModel с поддержкой prompt caching — как AnthropicModel.
+
+    Подбор ответа работает так же, как у ScriptedModel (маркер ищется по
+    склеенным cache_prefix + query), но пары запоминаются отдельно — тесты
+    могут проверить, что общий контекст ушёл именно в кэшируемый блок,
+    а не заново с каждым запросом.
+    """
+
+    supports_prompt_caching = True
+
+    def __init__(self, replies: Dict[str, Reply], strict: bool = True):
+        super().__init__(replies, strict)
+        self.cache_calls: List[tuple] = []
+
+    def response_with_cache(self, cache_prefix: str, query: str) -> str:
+        self.cache_calls.append((cache_prefix, query))
+        return self.response(cache_prefix + query)
+
+
 class SequenceModel(AIModel):
     """Отдаёт заготовленные ответы по одному на вызов."""
 
@@ -100,8 +120,19 @@ class Marker:
     FILE_MATCH = "### ТРЕБУЕМЫЙ ДОКУМЕНТ"
     FORM_FIELDS = "### ШАБЛОН"
     FIELD_VALUE = "### ЗАПРАШИВАЕМОЕ ПОЛЕ"
+    INLINE_BLANKS = "### ПРОПУСКИ ДЛЯ ЗАПОЛНЕНИЯ"
 
 
 def value_between(query: str, marker: str) -> str:
-    """Текст между маркером и следующим заголовком раздела промпта."""
-    return query.split(marker)[1].split("###")[0].strip()
+    """Первая непустая строка сразу после маркера раздела промпта.
+
+    Не весь текст до следующего "###": шаблон может содержать пояснительную
+    фразу после самого значения (метки, задачи и т. п.), и это не должно
+    ломать тесты при мелких правках текста промпта.
+    """
+    after = query.split(marker)[1]
+    for line in after.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ""

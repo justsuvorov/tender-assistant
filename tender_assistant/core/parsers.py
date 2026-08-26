@@ -1,6 +1,8 @@
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator, List
 
 import pandas as pd
 import pdfplumber
@@ -448,3 +450,155 @@ class MarkdownOutline:
         text = re.sub(r"^[\s\d.)»«\-–—]+", "", text or "")
         text = re.sub(r"[^\w\s]", " ", text.lower())
         return " ".join(text.split())
+
+
+# ---------------------------------------------------------------------------
+# Inline blanks (несколько пропусков в одном абзаце ячейки таблицы)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class InlineBlank:
+    """Один пропуск внутри абзаца шаблона — не отдельная ячейка, а место
+    прямо посреди текста (``_____________ (наименование участника закупки)``).
+
+    Сам текст шаблона НЕ правится: подобранное значение пишется в соседнее
+    поле справа (см. reports/writers.py: WordApplicationWriter._fill_inline_blanks),
+    откуда пользователь копирует его в нужное место сам. Поэтому здесь
+    хранится не только позиция пропуска, но и его положение в таблице:
+    ``cell`` — ячейка с пропуском, ``row_cells``/``cell_index`` — строка и
+    место в ней, по ним находится ячейка-приёмник ответа.
+
+    ``start``/``end`` — координаты пропуска в тексте абзаца на момент
+    сканирования; используются, чтобы отрисовать метки ``[[N]]`` в промпте.
+    """
+
+    id: int
+    label: str
+    paragraph: object
+    start: int
+    end: int
+    cell: object = None
+    row_cells: tuple = ()
+    cell_index: int = -1
+
+
+def xml_path(element) -> str:
+    """Стабильный ключ идентичности lxml-элемента.
+
+    ``id(element)`` для обёрток python-docx/lxml ненадёжен: сами Python-объекты
+    эфемерны (создаются заново при каждом обращении вроде ``row.cells`` или
+    ``cell.paragraphs``), и если промежуточный объект не удержан ссылкой,
+    сборщик мусора освобождает его адрес — тот же ``id()`` затем достаётся
+    СОВСЕМ ДРУГОМУ элементу. На реальном документе (не игрушечном тесте) это
+    не редкий случай, а происходит почти на каждой ячейке — проверено эмпирически.
+    ``getroottree().getpath(element)`` — путь элемента в дереве, не зависящий
+    от времени жизни Python-обёртки, поэтому именно он годится как ключ dict/set.
+    """
+    return element.getroottree().getpath(element)
+
+
+_INLINE_BLANK_RUN = re.compile(r"_{3,}|\.{4,}|«_+»")
+_INLINE_BLANK_HINT = re.compile(r"^\s*\(([^()]{3,150})\)")
+
+# Одиночный пропуск в ячейке — это уже покрыто механизмом «метка в одной
+# ячейке → значение в соседней» (см. application/application.py, TenderAIQuery
+# + reports/writers.py, WordApplicationWriter._fill_in_tables). Инлайн-детектор
+# нужен только там, где НЕСКОЛЬКО разных по смыслу пропусков делят один
+# абзац — той механике такое не по силам в принципе (она даёт одно значение
+# на одну ячейку). Порог "2 и больше" — чтобы не дублировать и не
+# конфликтовать со старым механизмом на одиночных пропусках.
+_MIN_BLANKS_PER_PARAGRAPH = 2
+
+
+def find_inline_blanks(document: Document) -> List[InlineBlank]:
+    """Пропуски (2+ на абзац) во всех ячейках таблиц документа, рекурсивно.
+
+    Работает по реальной объектной модели docx, а не по плоскому markdown —
+    только так можно различить несколько пропусков в одном абзаце и
+    вернуться потом ровно к нужному месту при записи.
+    """
+    blanks: List[InlineBlank] = []
+    counter = 0
+
+    for cell, row_cells, cell_index in _iter_table_cells(document):
+        for paragraph in cell.paragraphs:
+            text = paragraph.text
+            matches = list(_INLINE_BLANK_RUN.finditer(text))
+            if len(matches) < _MIN_BLANKS_PER_PARAGRAPH:
+                continue
+
+            for match in matches:
+                hint = _INLINE_BLANK_HINT.match(text[match.end():match.end() + 160])
+                label = hint.group(1).strip() if hint else _inline_blank_fallback_label(
+                    text, match
+                )
+                counter += 1
+                blanks.append(InlineBlank(
+                    id=counter, label=label, paragraph=paragraph,
+                    start=match.start(), end=match.end(),
+                    cell=cell, row_cells=tuple(row_cells), cell_index=cell_index,
+                ))
+
+    return blanks
+
+
+def render_blanks_context(blanks: List[InlineBlank]) -> str:
+    """Текст для промпта: абзацы с пропусками, помеченными ``[[N]]``.
+
+    Несколько пропусков одного абзаца показываются одним фрагментом —
+    модели нужен полный контекст предложения, а не пропуски по отдельности.
+    """
+    order: List[str] = []
+    grouped: dict = {}
+    for blank in blanks:
+        key = xml_path(blank.paragraph._p)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(blank)
+
+    fragments = [_annotate_paragraph(grouped[key]) for key in order]
+    return "\n\n".join(fragments)
+
+
+def _annotate_paragraph(group: List[InlineBlank]) -> str:
+    text = group[0].paragraph.text
+    for blank in sorted(group, key=lambda b: b.start, reverse=True):
+        text = text[:blank.start] + f"[[{blank.id}]]" + text[blank.end:]
+    return text
+
+
+def _inline_blank_fallback_label(text: str, match: "re.Match") -> str:
+    """Метка, когда рядом с пропуском нет поясняющей скобки."""
+    context = text[max(0, match.start() - 60):match.start()].strip()
+    return context[-60:] if context else "пропуск без поясняющей подписи"
+
+
+def _iter_table_cells(document: Document) -> Iterator:
+    for table in document.tables:
+        yield from _iter_cells_of_table(table)
+
+
+def _iter_cells_of_table(table) -> Iterator:
+    """(ячейка, все ячейки её строки, индекс в строке) — включая вложенные таблицы.
+
+    Позиция в строке нужна, чтобы найти ячейку-приёмник ответа справа от той,
+    где стоит пропуск.
+
+    Объединённые по вертикали/горизонтали ячейки: python-docx отдаёт один
+    и тот же объект ячейки для каждой строки/колонки, охваченной
+    объединением — без дедупликации содержимое объединённой ячейки попало бы
+    в результат по разу на каждую охваченную строку. Дедупликация — по
+    xml_path(), не по id() (см. его docstring).
+    """
+    seen = set()
+    for row in table.rows:
+        cells = row.cells
+        for index, cell in enumerate(cells):
+            key = xml_path(cell._tc)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield cell, cells, index
+            for nested_table in cell.tables:
+                yield from _iter_cells_of_table(nested_table)

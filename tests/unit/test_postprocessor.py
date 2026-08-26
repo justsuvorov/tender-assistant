@@ -9,6 +9,7 @@ import pytest
 from tender_assistant.ai.postprocessor import (
     DocumentListResponse,
     FormFieldsResponse,
+    InlineBlanksResponse,
     JsonExtractor,
     NormativeFilterResponse,
     SectionsMatcherResponse,
@@ -254,3 +255,48 @@ class TestTenderRowPostProcessor:
     def test_found_without_value_is_missing(self, processor):
         """Модель не может одновременно «найти» значение и не вернуть его."""
         assert processor.report('{"value": "", "status": "found"}')["status"] == "missing"
+
+
+class TestInlineBlanksResponse:
+    """Пакетный ответ по инлайн-пропускам: {"1": {...}, "2": {...}}."""
+
+    @pytest.fixture
+    def processor(self):
+        return InlineBlanksResponse()
+
+    def test_full_answer(self, processor):
+        raw = """{"1": {"value": "САО «ВСК»", "status": "found",
+                         "source": "company.md", "note": ""},
+                  "2": {"value": "Россия", "status": "found",
+                        "source": "", "note": ""}}"""
+        result = processor.report(raw)
+
+        assert result["1"]["value"] == "САО «ВСК»"
+        assert result["2"]["value"] == "Россия"
+
+    def test_each_item_normalised_like_a_single_field(self, processor):
+        """Та же нормализация статусов, что у TenderRowPostProcessor —
+        не два независимых, слегка расходящихся набора правил."""
+        raw = '{"1": {"value": "X", "status": "ok"}}'
+        assert processor.report(raw)["1"]["status"] == "check"
+
+    def test_found_without_value_is_missing(self, processor):
+        raw = '{"1": {"value": "", "status": "found"}}'
+        assert processor.report(raw)["1"]["status"] == "missing"
+
+    def test_non_dict_items_are_skipped(self, processor):
+        raw = '{"1": "не объект", "2": {"value": "X", "status": "found"}}'
+        result = processor.report(raw)
+        assert "1" not in result
+        assert result["2"]["value"] == "X"
+
+    def test_not_a_json_object_yields_empty_dict(self, processor):
+        assert processor.report("совсем не json") == {}
+        assert processor.report("[1, 2, 3]") == {}
+
+    def test_empty_response(self, processor):
+        assert processor.report("") == {}
+
+    def test_fenced_json(self, processor):
+        raw = '```json\n{"1": {"value": "X", "status": "found"}}\n```'
+        assert processor.report(raw)["1"]["value"] == "X"

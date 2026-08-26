@@ -106,6 +106,22 @@ class TestFullPipeline:
         assert reports[1].startswith("document_list_")
         assert reports[2].startswith("documents_status_")
 
+    def test_document_list_is_also_formatted_as_word(self, result, results_dir):
+        """Этап 1 отдаёт и markdown-отчёт, и оформленный документ — оба сразу."""
+        from docx import Document as ReadDocx
+
+        formatted = Path(result.document_list.formatted_path)
+        assert formatted.exists()
+        assert formatted.suffix == ".docx"
+        assert formatted.parent == results_dir
+        assert formatted != Path(result.document_list.report_path)
+
+        headings = [
+            p.text for p in ReadDocx(str(formatted)).paragraphs
+            if p.style.name.startswith("Heading")
+        ]
+        assert "Перечень документов для участия в закупке" in headings
+
     def test_source_documents_are_not_modified(
         self, api_request, scripted_model, requirements_docx, template_docx
     ):

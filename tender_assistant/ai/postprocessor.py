@@ -302,3 +302,45 @@ class TenderRowPostProcessor(PostProcessor):
             "source": str(data.get("source") or "").strip(),
             "note": str(data.get("note") or "").strip(),
         }
+
+    @classmethod
+    def _normalise_item(cls, item: dict) -> dict:
+        value = str(item.get("value") or "").strip()
+        status = str(item.get("status") or "").strip().lower()
+
+        if status not in cls._STATUSES:
+            status = "check" if value else "missing"
+        if not value and status != "missing":
+            status = "missing"
+
+        return {
+            "value": value,
+            "status": status,
+            "source": str(item.get("source") or "").strip(),
+            "note": str(item.get("note") or "").strip(),
+        }
+
+
+class InlineBlanksResponse(PostProcessor):
+    """Ответ на пакетный запрос по инлайн-пропускам одного шаблона.
+
+    В отличие от TenderRowPostProcessor (один пропуск на ответ), здесь
+    ответ — JSON-объект по ВСЕМ пропускам сразу: {"1": {...}, "2": {...}}.
+    Пакетный запрос — чтобы не делать по отдельному вызову модели на
+    каждый пропуск (см. application/application.py, InlineBlanksQuery).
+    """
+
+    def __init__(self):
+        self._json = JsonExtractor()
+
+    def report(self, raw_text: str) -> dict:
+        data = self._json.extract(raw_text)
+        if not isinstance(data, dict):
+            return {}
+
+        result = {}
+        for key, item in data.items():
+            if not isinstance(item, dict):
+                continue
+            result[str(key).strip()] = TenderRowPostProcessor._normalise_item(item)
+        return result

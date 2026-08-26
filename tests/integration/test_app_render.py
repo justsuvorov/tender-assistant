@@ -31,6 +31,7 @@ SAMPLE_RESPONSE = {
         "documents": [{"name": "Устав"}, {"name": "Выписка из ЕГРЮЛ"}],
         "excluded": [{"name": "Паспорт ИП"}],
         "report_path": r"D:\r\document_list.md",
+        "formatted_path": r"D:\r\Перечень документов.docx",
     },
     "prepared_documents": {
         "rows": [
@@ -122,7 +123,7 @@ def test_all_three_stages_are_summarised(rendered, caption):
 
 
 @pytest.mark.parametrize("caption", [
-    "Открыть комплект", "Открыть заявку", "Открыть отчёт",
+    "Открыть перечень", "Открыть комплект", "Открыть заявку", "Открыть отчёт",
 ])
 def test_result_actions_are_offered(rendered, caption):
     assert caption in rendered["texts"]

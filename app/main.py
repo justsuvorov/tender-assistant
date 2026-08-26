@@ -503,11 +503,18 @@ def _results_view(result: dict):
         _stat_row("Требуется документов:", str(len(documents)))
         if excluded:
             _stat_row("Исключено по нормативной базе:", str(len(excluded)), _MUTED)
-        if document_list.get("report_path"):
-            Button(title="Открыть отчёт",
-                   on_click=lambda _=None: _open_in_explorer(
-                       document_list["report_path"]),
-                   style={**btn(), "margin-top": "8px"})
+
+        with HBoxView(style={"margin-top": "8px"}):
+            if document_list.get("formatted_path"):
+                Button(title="Открыть перечень",
+                       on_click=lambda _=None: _open_in_explorer(
+                           document_list["formatted_path"]),
+                       style=btn(_GREEN))
+            if document_list.get("report_path"):
+                Button(title="Открыть отчёт",
+                       on_click=lambda _=None: _open_in_explorer(
+                           document_list["report_path"]),
+                       style=btn())
 
     # Этап 2
     with VBoxView(style=card()):

@@ -1,15 +1,18 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
+
+from docx import Document
 
 from tender_assistant.ai.model import AIModel
 from tender_assistant.ai.postprocessor import (
     FormFieldsResponse,
+    InlineBlanksResponse,
     PostProcessor,
     TenderRowPostProcessor,
 )
 from tender_assistant.ai.promt_builders import NormativeBaseLoader, PromptEngine
 from tender_assistant.core.config import settings
-from tender_assistant.core.parsers import DataParser
+from tender_assistant.core.parsers import DataParser, InlineBlank, find_inline_blanks, render_blanks_context
 from tender_assistant.core.pydantic_models import (
     FieldStatus,
     FilledField,
@@ -18,6 +21,8 @@ from tender_assistant.core.pydantic_models import (
 )
 from tender_assistant.reports.report_export import BaseReport, TenderApplicationReport
 from tender_assistant.reports.writers import ReportWriter, TenderReportWriter
+
+_WORD_SUFFIXES = {".docx", ".doc"}
 
 
 class TenderQuery:
@@ -28,7 +33,17 @@ class TenderQuery:
 
 
 class TenderAIQuery(TenderQuery):
-    """Ищет значение поля заявки в базе знаний и требованиях тендера через LLM."""
+    """Ищет значение поля заявки в базе знаний и требованиях тендера через LLM.
+
+    Материалы (эталонные заявки + требования тендера) — общие для всех полей
+    одной заявки, а полей бывают десятки. Если модель поддерживает prompt
+    caching (``ai_model.supports_prompt_caching``), материалы отправляются
+    отдельным кэшируемым блоком одинаковыми на каждый вызов: первый раз —
+    по полной цене, следующие в течение ~5 минут — по цене чтения кэша.
+    Иначе — как раньше: материалы обрезаются под конкретное поле, чтобы не
+    жечь токены и не переполнять окно (актуально для self-hosted моделей
+    с небольшим контекстом).
+    """
 
     def __init__(
         self,
@@ -39,22 +54,74 @@ class TenderAIQuery(TenderQuery):
         self.prompt_engine = prompt_engine or PromptEngine()
         self.tender_row_postprocessor = tender_row_postprocessor or TenderRowPostProcessor()
         self.ai_model = ai_model
-        self.prompt = settings.tender_form_fill_template
+        self.context_template = settings.tender_form_fill_context_template
+        self.field_template = settings.tender_form_fill_field_template
 
     def result(self, field_label: str, context: str) -> dict:
         """Возвращает {'value', 'status', 'source', 'note'} для поля заявки."""
-        query = self._prepare_query(field_label, context)
-        response = self.ai_model.response(query)
+        query = self.prompt_engine.render(self.field_template, field_label=field_label)
+
+        if self.ai_model.supports_prompt_caching:
+            materials = self.prompt_engine.render(self.context_template, context=context)
+            response = self.ai_model.response_with_cache(materials, query)
+        else:
+            materials = self.prompt_engine.render(
+                self.context_template,
+                fit_key="context",
+                fit_query=field_label,
+                context=context,
+            )
+            response = self.ai_model.response(materials + "\n" + query)
+
         return self.tender_row_postprocessor.report(response)
 
-    def _prepare_query(self, field_label: str, context: str) -> str:
-        return self.prompt_engine.render(
-            self.prompt,
-            fit_key="context",
-            fit_query=field_label,
-            field_label=field_label,
-            context=context,
+
+class InlineBlanksQuery(TenderQuery):
+    """Пакетный запрос значений для пропусков внутри абзацев шаблона.
+
+    В отличие от TenderAIQuery (один вызов на поле), здесь ВСЕ пропуски
+    уходят ОДНИМ запросом: у форм вроде Росатова таких пропусков может
+    набраться больше десятка (несколько на один пронумерованный пункт).
+    По вызову на каждый означало бы столько же round-trip'ов даже при
+    включённом prompt caching — кэш экономит стоимость и повторную
+    обработку контекста, но не сетевую задержку самого вызова.
+    """
+
+    def __init__(
+        self,
+        ai_model: AIModel,
+        response_post_processor: PostProcessor = None,
+        prompt_engine: PromptEngine = None,
+    ):
+        self.ai_model = ai_model
+        self.response_post_processor = response_post_processor or InlineBlanksResponse()
+        self.prompt_engine = prompt_engine or PromptEngine()
+        self.context_template = settings.tender_form_fill_context_template
+        self.blanks_template = settings.tender_form_inline_blanks_template
+
+    def result(self, blanks: List[InlineBlank], context: str) -> Dict[str, dict]:
+        """Возвращает {"<id>": {'value','status','source','note'}, ...}."""
+        if not blanks:
+            return {}
+
+        blanks_context = render_blanks_context(blanks)
+        query = self.prompt_engine.render(
+            self.blanks_template, blanks_context=blanks_context
         )
+
+        if self.ai_model.supports_prompt_caching:
+            materials = self.prompt_engine.render(self.context_template, context=context)
+            response = self.ai_model.response_with_cache(materials, query)
+        else:
+            materials = self.prompt_engine.render(
+                self.context_template,
+                fit_key="context",
+                fit_query=blanks_context,
+                context=context,
+            )
+            response = self.ai_model.response(materials + "\n" + query)
+
+        return self.response_post_processor.report(response)
 
 
 class TenderForm:
@@ -134,6 +201,7 @@ class TenderApplication:
         report: BaseReport = None,
         results_path: Optional[str] = None,
         base_loader: NormativeBaseLoader = None,
+        inline_query: InlineBlanksQuery = None,
     ):
         self.report_writer = report_writer or TenderReportWriter()
         self.report = report or TenderApplicationReport()
@@ -143,6 +211,7 @@ class TenderApplication:
         self.application_template_path = application_template_path
         self.results_path = results_path or settings.results_root
         self.base_loader = base_loader or NormativeBaseLoader()
+        self.inline_query = inline_query
 
     def result(self) -> TenderApplicationResult:
         """Читает шаблон и базу знаний, заполняет поля и сохраняет заявку."""
@@ -152,12 +221,47 @@ class TenderApplication:
 
         context = self._build_context(md_knowledge_base, md_tender_info)
         fields = self.tender_form.prepare(md_template_form, context)
+        fields = fields + self._fill_inline_blanks(context)
 
         result = TenderApplicationResult(fields=fields)
         result.filled_path = str(self._write_application(fields))
         result.report_path = self.report.result(self._report_text(result))
 
         return result
+
+    def _fill_inline_blanks(self, context: str) -> List[FilledField]:
+        """Несколько пропусков в одном абзаце (см. core/parsers.py) — отдельный
+        путь параллельно построчному: старый механизм даёт одно значение на
+        одну ячейку и не умеет различать несколько пропусков внутри неё.
+        """
+        if self.inline_query is None:
+            return []
+        if Path(self.application_template_path).suffix.lower() not in _WORD_SUFFIXES:
+            return []
+
+        document = Document(self.application_template_path)
+        blanks = find_inline_blanks(document)
+        if not blanks:
+            return []
+
+        print(f"[INFO] Инлайн-пропусков в шаблоне найдено: {len(blanks)}", flush=True)
+        answers = self.inline_query.result(blanks, context)
+
+        fields = []
+        for blank in blanks:
+            answer = answers.get(str(blank.id)) or {
+                "value": "", "status": "missing", "source": "", "note": "",
+            }
+            fields.append(FilledField(
+                label=blank.label,
+                anchor=str(blank.id),
+                kind="inline",
+                value=answer["value"],
+                status=FieldStatus(answer["status"]),
+                source=answer["source"],
+                note=answer["note"],
+            ))
+        return fields
 
     # ── шаги ──────────────────────────────────────────────────────────────────
 

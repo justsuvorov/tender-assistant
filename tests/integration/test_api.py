@@ -100,6 +100,7 @@ class TestUpdateSuccess:
         assert [d["name"] for d in section["documents"]][0] == "Выписка из ЕГРЮЛ"
         assert section["source_headers"] == ["3. Состав заявки участника"]
         assert section["report_path"]
+        assert section["formatted_path"].endswith(".docx")
 
     def test_prepared_documents_section(self, body):
         rows = body["prepared_documents"]["rows"]

@@ -1,3 +1,5 @@
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from tender_assistant.ai.model import AIModel
@@ -12,6 +14,7 @@ from tender_assistant.core.config import settings
 from tender_assistant.core.parsers import DataParser, MarkdownOutline, Section
 from tender_assistant.core.pydantic_models import DocumentListResult, RequiredDocument
 from tender_assistant.reports.report_export import BaseReport, DocumentListReport
+from tender_assistant.reports.writers import DocumentListWriter, ReportWriter
 
 
 class DocumentSections:
@@ -190,12 +193,16 @@ class DocumentList:
         sections_matcher: SectionsMatcher,
         context_matcher: ContextMatcher,
         normative_checker: NormativeChecker = None,
+        writer: ReportWriter = None,
+        results_path: Optional[str] = None,
     ):
         self.context_matcher = context_matcher
         self.sections_matcher = sections_matcher
         self.document_sections = document_sections
         self.normative_checker = normative_checker
         self.report = report or DocumentListReport()
+        self.writer = writer or DocumentListWriter()
+        self.results_path = results_path or settings.results_root
 
     def result(self) -> DocumentListResult:
         """Читает документ, находит раздел с перечнем документов и разбирает его.
@@ -214,12 +221,17 @@ class DocumentList:
         )
 
         result.report_path = self.report.result(self._report_text(result))
+        result.formatted_path = str(self.writer.write(result, self._formatted_output_path()))
         print(
             f"[INFO] Итоговый перечень документов: {len(result.documents)} шт. "
             f"(отброшено {len(result.excluded)})",
             flush=True,
         )
         return result
+
+    def _formatted_output_path(self) -> Path:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return Path(self.results_path) / f"Перечень документов_{stamp}.docx"
 
     def _find_headers(self) -> List[str]:
         if not self.document_sections.has_headings():

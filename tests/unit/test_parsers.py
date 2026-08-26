@@ -9,6 +9,9 @@ from tender_assistant.core.parsers import (
     MarkdownOutline,
     MarkdownTableBuilder,
     Section,
+    find_inline_blanks,
+    render_blanks_context,
+    xml_path,
 )
 
 
@@ -208,3 +211,171 @@ class TestSection:
 
     def test_repr_shows_title(self):
         assert "Заголовок" in repr(Section("Заголовок", 2))
+
+
+class TestXmlPath:
+    """id() Python-обёрток python-docx/lxml ненадёжен как ключ идентичности —
+    объекты эфемерны, GC может отдать тот же id() совсем другому элементу
+    на настоящем (не игрушечном) документе. xml_path строит ключ из позиции
+    в дереве, а не из адреса Python-объекта."""
+
+    def test_same_element_same_path(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        cell = table.rows[0].cells[0]
+        assert xml_path(cell._tc) == xml_path(table.rows[0].cells[0]._tc)
+
+    def test_different_elements_different_paths(self):
+        doc = Document()
+        table = doc.add_table(rows=2, cols=1)
+        assert xml_path(table.rows[0].cells[0]._tc) != xml_path(table.rows[1].cells[0]._tc)
+
+
+def _add_cell_text(cell, text: str) -> None:
+    cell.paragraphs[0].add_run(text)
+
+
+class TestFindInlineBlanks:
+    """Пропуски внутри абзацев ячеек таблиц — регрессия на реальную форму
+    Росатова (223-ФЗ): пункт вида «15.1» — три РАЗНЫХ по смыслу пропуска
+    в одном предложении, каждому нужно своё значение."""
+
+    def test_two_blanks_with_hints_in_one_paragraph_are_found(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        _add_cell_text(
+            table.rows[0].cells[0],
+            "_____ (наименование участника закупки) зарегистрирован в "
+            "_____ (наименование государства) в установленном порядке.",
+        )
+
+        blanks = find_inline_blanks(doc)
+
+        assert len(blanks) == 2
+        assert blanks[0].label == "наименование участника закупки"
+        assert blanks[1].label == "наименование государства"
+
+    def test_single_blank_in_a_cell_is_not_treated_as_inline(self):
+        """Один пропуск на абзац — это зона старого механизма (метка в
+        ячейке → значение в соседней), не инлайн-детектора. Порог "2 и
+        больше" — намеренный, чтобы не дублировать и не конфликтовать."""
+        doc = Document()
+        table = doc.add_table(rows=1, cols=2)
+        table.rows[0].cells[0].text = "Руководитель"
+        _add_cell_text(table.rows[0].cells[1], "______________")
+
+        assert find_inline_blanks(doc) == []
+
+    def test_body_paragraphs_are_not_scanned(self):
+        """Инлайн-детектор — только ячейки таблиц. Одиночные и множественные
+        пропуски в body-абзацах уже работают через старый механизм
+        (WordApplicationWriter._fill_in_paragraphs); дублировать эту зону
+        не нужно — риск двойной записи в один абзац."""
+        doc = Document()
+        doc.add_paragraph(
+            "___ (участник) и ___ (страна) — оба пропуска вне таблицы."
+        )
+        assert find_inline_blanks(doc) == []
+
+    def test_fallback_label_when_no_hint(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        _add_cell_text(
+            table.rows[0].cells[0],
+            "Настоящим подтверждаем: ___ является учредителем ___ полностью.",
+        )
+
+        blanks = find_inline_blanks(doc)
+        assert len(blanks) == 2
+        assert blanks[0].label != ""
+        assert "поясняющей подписи" in blanks[1].label or blanks[1].label
+
+    def test_ids_are_stable_and_sequential(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        _add_cell_text(table.rows[0].cells[0], "___ (а) и ___ (б) и ___ (в).")
+
+        blanks = find_inline_blanks(doc)
+        assert [b.id for b in blanks] == [1, 2, 3]
+
+    def test_merged_cell_is_scanned_once_not_per_row(self):
+        """Дедупликация через xml_path: без неё абзацы объединённой ячейки
+        попали бы в результат по разу на каждую охваченную строку."""
+        doc = Document()
+        table = doc.add_table(rows=3, cols=1)
+        table.cell(0, 0).merge(table.cell(2, 0))
+        _add_cell_text(
+            table.rows[0].cells[0],
+            "___ (участник) подтверждает ___ (условие) в полном объёме.",
+        )
+
+        blanks = find_inline_blanks(doc)
+        assert len(blanks) == 2  # не 6 (2 пропуска × 3 строки объединения)
+
+    def test_many_unrelated_cells_do_not_hide_the_match(self):
+        """Регрессионный сценарий: на реальном документе с десятками ячеек
+        id() python-docx обёрток совпадал у совершенно разных ячеек из-за
+        переиспользования GC — из-за этого искомый абзац считался
+        "уже виденным" и пропускался. Таблица с большим числом строк — сеть
+        для похожего класса ошибок, даже не гарантируя точное воспроизведение."""
+        doc = Document()
+        table = doc.add_table(rows=30, cols=2)
+        for i in range(30):
+            table.rows[i].cells[0].text = f"Строка {i}"
+            table.rows[i].cells[1].text = "просто текст без пропусков"
+
+        _add_cell_text(
+            table.rows[29].cells[1],
+            "___ (участник) и ___ (страна) — в последней строке таблицы.",
+        )
+
+        blanks = find_inline_blanks(doc)
+        assert len(blanks) == 2
+
+    def test_nested_table_is_scanned(self):
+        doc = Document()
+        outer = doc.add_table(rows=1, cols=1)
+        inner = outer.rows[0].cells[0].add_table(rows=1, cols=1)
+        _add_cell_text(
+            inner.rows[0].cells[0], "___ (участник) и ___ (страна) во вложенной таблице."
+        )
+
+        blanks = find_inline_blanks(doc)
+        assert len(blanks) == 2
+
+    def test_no_tables_at_all(self):
+        doc = Document()
+        doc.add_paragraph("Просто текст без таблиц.")
+        assert find_inline_blanks(doc) == []
+
+
+class TestRenderBlanksContext:
+    def test_markers_replace_blank_spans(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        _add_cell_text(
+            table.rows[0].cells[0],
+            "___ (участник) зарегистрирован в ___ (страна) в установленном порядке.",
+        )
+        blanks = find_inline_blanks(doc)
+
+        rendered = render_blanks_context(blanks)
+
+        assert "[[1]]" in rendered and "[[2]]" in rendered
+        assert "___" not in rendered
+        assert "(участник)" in rendered  # поясняющая скобка остаётся как контекст
+
+    def test_multiple_paragraphs_are_joined(self):
+        doc = Document()
+        table = doc.add_table(rows=2, cols=1)
+        _add_cell_text(table.rows[0].cells[0], "___ (а) и ___ (б) в первом.")
+        _add_cell_text(table.rows[1].cells[0], "___ (в) и ___ (г) во втором.")
+        blanks = find_inline_blanks(doc)
+
+        rendered = render_blanks_context(blanks)
+
+        assert rendered.count("[[") == 4
+        assert "\n\n" in rendered  # абзацы разделены
+
+    def test_empty_list(self):
+        assert render_blanks_context([]) == ""

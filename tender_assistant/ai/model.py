@@ -10,9 +10,25 @@ from tender_assistant.core.config import settings
 
 
 class AIModel(ABC):
+    #: True у провайдеров, реально экономящих на повторной отправке
+    #: большого общего префикса (например, Anthropic prompt caching).
+    #: Влияет на то, обрезает ли вызывающий код контекст под конкретный
+    #: запрос (self-hosted, окно небольшое) или отправляет целиком,
+    #: полагаясь на кэш (см. TenderAIQuery в application/application.py).
+    supports_prompt_caching: bool = False
+
     @abstractmethod
     def response(self, query: str) -> str:
         pass
+
+    def response_with_cache(self, cache_prefix: str, query: str) -> str:
+        """Запрос с явно выделенным кэшируемым префиксом.
+
+        По умолчанию — просто конкатенация и обычный response(): провайдер
+        не поддерживает кэширование, разбивать промпт на блоки незачем.
+        Переопределяется там, где ``supports_prompt_caching = True``.
+        """
+        return self.response(cache_prefix + query)
 
 
 # ── Service LLM base (для облачных моделей с retry-логикой) ──────────────────
@@ -102,10 +118,16 @@ class ServiceLLMModel(AIModel, ABC):
             or "rate limit" in text
         )
 
-    @staticmethod
-    def _is_empty_response(exc: Exception) -> bool:
+    # Наши raise ValueError(...) согласуют глагол по роду подлежащего
+    # ("Gemini не вернула текст", "Qwen не вернул текст"), поэтому проверка
+    # на точную фразу "не вернул текст" пропускала половину случаев —
+    # ловим оба окончания одним паттерном.
+    _EMPTY_RESPONSE_RE = re.compile(r"не верн\w* текст")
+
+    @classmethod
+    def _is_empty_response(cls, exc: Exception) -> bool:
         text = str(exc).lower()
-        return "не вернул текст" in text or "no response" in text
+        return bool(cls._EMPTY_RESPONSE_RE.search(text)) or "no response" in text
 
 
 # ── Gemini (cloud) ────────────────────────────────────────────────────────────
@@ -153,6 +175,9 @@ class GeminiModel(ServiceLLMModel):
 # ── Anthropic Claude (cloud) ──────────────────────────────────────────────────
 
 class AnthropicModel(ServiceLLMModel):
+    #: Реальное prompt caching через cache_control — см. response_with_cache.
+    supports_prompt_caching = True
+
     def __init__(self):
         import anthropic
 
@@ -161,22 +186,62 @@ class AnthropicModel(ServiceLLMModel):
             api_key=settings.anthropic_api_key.get_secret_value()
         )
 
-    def _call_api(self, query: str) -> str:
+    def _call_api(self, query: str, cache_prefix: str = "") -> str:
+        # temperature не передаём: для новых моделей Claude (Sonnet/Opus 5)
+        # этот параметр deprecated и API отвечает 400 invalid_request_error.
+        #
+        # thinking явно отключаем: для этих же моделей extended thinking
+        # включено по умолчанию и тратит на рассуждения весь max_tokens,
+        # так что на сам ответ не остаётся ни одного токена (stop_reason
+        # оказывается "max_tokens" при пустом текстовом блоке). Наши задачи —
+        # извлечение и классификация текста, а не многошаговое рассуждение,
+        # поэтому thinking здесь не нужен.
+        #
+        # cache_prefix — общий для многих вызовов кусок промпта (например,
+        # материалы для заполнения десятков полей заявки): выносим его
+        # отдельным блоком с cache_control, чтобы платить полную цену только
+        # за первый вызов, а за последующие в течение ~5 минут — по тарифу
+        # чтения кэша (на порядок дешевле). Без cache_prefix ведём себя как
+        # раньше — один текстовый блок без разбивки.
+        content = (
+            [
+                {"type": "text", "text": cache_prefix,
+                 "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": query},
+            ]
+            if cache_prefix else query
+        )
         message = self._client.messages.create(
             model=settings.anthropic_model_name,
-            max_tokens=4096,
-            temperature=settings.ai_temperature,
-            messages=[{"role": "user", "content": query}],
+            max_tokens=8192,
+            thinking={"type": "disabled"},
+            messages=[{"role": "user", "content": content}],
         )
-        if not message.content or not message.content[0].text:
+        # message.content — список блоков; при включённом extended thinking
+        # первым идёт ThinkingBlock без атрибута text, текст — в TextBlock.
+        text = "".join(
+            block.text for block in message.content
+            if getattr(block, "type", None) == "text"
+        ).strip()
+        if not text:
             raise ValueError("Anthropic не вернула текст")
-        return message.content[0].text.strip()
+        return text
 
     def response(self, query: str) -> str:
-        """Override to handle Anthropic-specific rate limit header."""
+        return self._retrying_call(query, cache_prefix="")
+
+    def response_with_cache(self, cache_prefix: str, query: str) -> str:
+        return self._retrying_call(query, cache_prefix=cache_prefix)
+
+    def _retrying_call(self, query: str, cache_prefix: str) -> str:
+        """Общий retry-цикл response()/response_with_cache().
+
+        Отдельный override нужен из-за специфичного для Anthropic заголовка
+        retry-after при 429 — базовый ServiceLLMModel.response() его не читает.
+        """
         for attempt in range(1, self.retries + 1):
             try:
-                return self._call_api(query)
+                return self._call_api(query, cache_prefix)
             except self._sdk.RateLimitError as e:
                 if attempt < self.retries:
                     wait = self.retry_delay
@@ -207,6 +272,15 @@ class AnthropicModel(ServiceLLMModel):
                     continue
                 raise RuntimeError(f"Ошибка Anthropic API: {e}") from e
             except ValueError as e:
+                if self._is_empty_response(e) and attempt < self.empty_response_retries:
+                    print(
+                        f"[WARN] {self.__class__.__name__} не вернул текст, "
+                        f"попытка {attempt}/{self.empty_response_retries}, "
+                        f"повтор через {self.empty_response_delay} сек",
+                        flush=True,
+                    )
+                    time.sleep(self.empty_response_delay)
+                    continue
                 raise RuntimeError(f"Ошибка Anthropic API: {e}") from e
         return _OVERLOAD_MESSAGE
 
@@ -314,10 +388,16 @@ class QwenModel(AIModel):
             or "timeout" in text
         )
 
-    @staticmethod
-    def _is_empty_response(exc: Exception) -> bool:
+    # Наши raise ValueError(...) согласуют глагол по роду подлежащего
+    # ("Gemini не вернула текст", "Qwen не вернул текст"), поэтому проверка
+    # на точную фразу "не вернул текст" пропускала половину случаев —
+    # ловим оба окончания одним паттерном.
+    _EMPTY_RESPONSE_RE = re.compile(r"не верн\w* текст")
+
+    @classmethod
+    def _is_empty_response(cls, exc: Exception) -> bool:
         text = str(exc).lower()
-        return "не вернул текст" in text or "no response" in text
+        return bool(cls._EMPTY_RESPONSE_RE.search(text)) or "no response" in text
 
 
 # ── VSK AI (OpenAI-compatible /v1/chat/completions) ────────────────────────────
@@ -437,10 +517,16 @@ class VskAIModel(AIModel):
             or "timeout" in text
         )
 
-    @staticmethod
-    def _is_empty_response(exc: Exception) -> bool:
+    # Наши raise ValueError(...) согласуют глагол по роду подлежащего
+    # ("Gemini не вернула текст", "Qwen не вернул текст"), поэтому проверка
+    # на точную фразу "не вернул текст" пропускала половину случаев —
+    # ловим оба окончания одним паттерном.
+    _EMPTY_RESPONSE_RE = re.compile(r"не верн\w* текст")
+
+    @classmethod
+    def _is_empty_response(cls, exc: Exception) -> bool:
         text = str(exc).lower()
-        return "не вернул текст" in text or "no response" in text
+        return bool(cls._EMPTY_RESPONSE_RE.search(text)) or "no response" in text
 
 # ── Ollama (local Docker or remote GPU server) ────────────────────────────────
 

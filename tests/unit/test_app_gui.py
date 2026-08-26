@@ -189,6 +189,7 @@ class TestResponseParsing:
 
         assert len(document_list["documents"]) == 4
         assert document_list["report_path"]
+        assert document_list["formatted_path"]
 
         statuses = [row["status"] for row in prepared["rows"]]
         assert statuses.count("Есть") == 2

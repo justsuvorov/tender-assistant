@@ -2,6 +2,7 @@ from tender_assistant.ai.model import AIModel, ModelFactory
 from tender_assistant.ai.postprocessor import (
     DocumentListResponse,
     FormFieldsResponse,
+    InlineBlanksResponse,
     NormativeFilterResponse,
     SectionsMatcherResponse,
     TenderRowPostProcessor,
@@ -10,6 +11,7 @@ from tender_assistant.ai.postprocessor import (
 from tender_assistant.ai.promt_builders import PromptEngine
 from tender_assistant.application.application import (
     AITenderForm,
+    InlineBlanksQuery,
     TenderAIQuery,
     TenderApplication,
 )
@@ -88,6 +90,7 @@ class TenderAssistantService:
                 response_post_processor=NormativeFilterResponse(),
                 prompt_engine=self.prompt_engine,
             ),
+            results_path=self.request.results_path,
         )
 
     # ── Этап 2 ────────────────────────────────────────────────────────────────
@@ -135,4 +138,9 @@ class TenderAssistantService:
             report_writer=TenderReportWriter(),
             report=report,
             results_path=self.request.results_path,
+            inline_query=InlineBlanksQuery(
+                ai_model=self.ai_model,
+                response_post_processor=InlineBlanksResponse(),
+                prompt_engine=self.prompt_engine,
+            ),
         )

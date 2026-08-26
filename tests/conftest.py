@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 os.environ.setdefault("AI_PROVIDER", "gemini")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("PROMPT_CONTEXT_WINDOW", "0")
 
 from docx import Document  # noqa: E402

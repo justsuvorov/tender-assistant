@@ -4,14 +4,18 @@ from pathlib import Path
 
 import pytest
 
+from docx import Document
+
 from tender_assistant.application.application import (
     AITenderForm,
+    InlineBlanksQuery,
     TenderAIQuery,
     TenderApplication,
 )
+from tender_assistant.core.parsers import find_inline_blanks
 from tender_assistant.core.pydantic_models import FieldStatus
 from tender_assistant.reports.report_export import TenderApplicationReport
-from tests.fakes import BrokenModel, Marker, ScriptedModel, as_json
+from tests.fakes import BrokenModel, CachingScriptedModel, Marker, ScriptedModel, as_json
 
 
 class TestTenderAIQuery:
@@ -35,6 +39,133 @@ class TestTenderAIQuery:
     def test_garbage_answer_requires_a_check(self):
         result = TenderAIQuery(ai_model=BrokenModel("7701234567")).result("ИНН", "к")
         assert result["status"] == "check"
+
+
+class TestTenderAIQueryPromptCaching:
+    """Регрессия: живой прогон на ~200К-символьном документе тендера показал
+    ~82К токенов контекста на КАЖДЫЙ из 47 запросов по полям заявки — материалы
+    отправлялись целиком заново на каждое поле, не переиспользуясь. Провайдеры
+    с prompt caching (Anthropic) должны получать материалы отдельным,
+    неизменным между полями кэшируемым блоком."""
+
+    def test_caching_model_receives_materials_as_a_stable_prefix(self):
+        model = CachingScriptedModel({Marker.FIELD_VALUE: as_json(
+            {"value": "7701234567", "status": "found", "source": "kb", "note": ""}
+        )})
+        TenderAIQuery(ai_model=model).result("ИНН", "ИНН: 7701234567 в базе знаний")
+
+        assert len(model.cache_calls) == 1
+        cache_prefix, query = model.cache_calls[0]
+        assert "ИНН: 7701234567 в базе знаний" in cache_prefix
+        assert "ИНН" in query
+        assert "### МАТЕРИАЛЫ" in cache_prefix
+        assert "### ЗАПРАШИВАЕМОЕ ПОЛЕ" in query
+
+    def test_materials_are_identical_across_fields(self):
+        """Смысл кэширования: один и тот же префикс на разные поля одной
+        заявки — иначе Anthropic не сможет переиспользовать кэш."""
+        model = CachingScriptedModel({Marker.FIELD_VALUE: as_json(
+            {"value": "X", "status": "found", "source": "", "note": ""}
+        )})
+        query_maker = TenderAIQuery(ai_model=model)
+        context = "общие материалы заявки"
+
+        query_maker.result("ИНН", context)
+        query_maker.result("Адрес", context)
+
+        prefixes = [prefix for prefix, _ in model.cache_calls]
+        assert prefixes[0] == prefixes[1]
+
+    def test_materials_are_not_trimmed_for_a_caching_model(self):
+        """Обрезка под конкретное поле сломала бы совпадение префиксов —
+        для кэширующих моделей материалы уходят целиком."""
+        big_context = "\n\n".join(f"# Раздел {i}\nпосторонний текст" for i in range(50))
+        model = CachingScriptedModel({Marker.FIELD_VALUE: as_json(
+            {"value": "X", "status": "found", "source": "", "note": ""}
+        )})
+        TenderAIQuery(ai_model=model).result("ИНН", big_context)
+
+        cache_prefix, _ = model.cache_calls[0]
+        assert cache_prefix.count("посторонний текст") == 50
+
+    def test_non_caching_model_gets_a_single_concatenated_query(self):
+        """Без поддержки кэширования — как раньше: один текст, без разбивки
+        на префикс и запрос."""
+        model = ScriptedModel({Marker.FIELD_VALUE: as_json(
+            {"value": "X", "status": "found", "source": "", "note": ""}
+        )})
+        TenderAIQuery(ai_model=model).result("ИНН", "материалы")
+
+        assert model.call_count(Marker.FIELD_VALUE) == 1
+        assert "материалы" in model.last_call()
+
+
+def _multi_blank_docx(path) -> None:
+    """Строка вида «15.1» — несколько разных по смыслу пропусков в одном
+    абзаце ячейки, как в реальной форме 223-ФЗ. Вторая колонка —
+    «Предложение участника», туда пишутся подобранные значения."""
+    doc = Document()
+    table = doc.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].paragraphs[0].add_run(
+        "___ (наименование участника закупки) зарегистрирован в "
+        "___ (наименование государства) в установленном порядке."
+    )
+    table.rows[0].cells[1].text = "«Да» / «Нет»"
+    doc.save(path)
+
+
+class TestInlineBlanksQuery:
+    """Пакетный запрос по нескольким пропускам одного абзаца — один вызов
+    модели на ВСЕ пропуски шаблона, а не по вызову на каждый."""
+
+    def test_batches_all_blanks_into_one_call(self, tmp_path):
+        path = tmp_path / "form.docx"
+        _multi_blank_docx(path)
+        blanks = find_inline_blanks(Document(str(path)))
+
+        model = CachingScriptedModel({Marker.INLINE_BLANKS: as_json({
+            "1": {"value": "САО «ВСК»", "status": "found", "source": "", "note": ""},
+            "2": {"value": "Россия", "status": "found", "source": "", "note": ""},
+        })})
+        answers = InlineBlanksQuery(ai_model=model).result(blanks, "материалы")
+
+        assert len(model.cache_calls) == 1
+        assert answers["1"]["value"] == "САО «ВСК»"
+        assert answers["2"]["value"] == "Россия"
+
+    def test_materials_go_into_the_cache_prefix(self, tmp_path):
+        path = tmp_path / "form.docx"
+        _multi_blank_docx(path)
+        blanks = find_inline_blanks(Document(str(path)))
+
+        model = CachingScriptedModel({Marker.INLINE_BLANKS: as_json({
+            "1": {"value": "X", "status": "found", "source": "", "note": ""},
+            "2": {"value": "Y", "status": "found", "source": "", "note": ""},
+        })})
+        InlineBlanksQuery(ai_model=model).result(blanks, "уникальные материалы")
+
+        cache_prefix, query = model.cache_calls[0]
+        assert "уникальные материалы" in cache_prefix
+        assert "[[1]]" in query and "[[2]]" in query
+
+    def test_no_blanks_skips_the_model(self):
+        model = CachingScriptedModel({})
+        assert InlineBlanksQuery(ai_model=model).result([], "материалы") == {}
+        assert model.cache_calls == []
+
+    def test_non_caching_model_gets_one_concatenated_query(self, tmp_path):
+        path = tmp_path / "form.docx"
+        _multi_blank_docx(path)
+        blanks = find_inline_blanks(Document(str(path)))
+
+        model = ScriptedModel({Marker.INLINE_BLANKS: as_json({
+            "1": {"value": "X", "status": "found", "source": "", "note": ""},
+            "2": {"value": "Y", "status": "found", "source": "", "note": ""},
+        })})
+        answers = InlineBlanksQuery(ai_model=model).result(blanks, "материалы")
+
+        assert model.call_count(Marker.INLINE_BLANKS) == 1
+        assert answers["1"]["value"] == "X"
 
 
 class TestAITenderForm:
@@ -175,3 +306,66 @@ class TestTenderApplication:
             template_docx, requirements_docx, knowledge_dir, results_dir, scripted_model
         ).result()
         assert template_docx.read_bytes() == before
+
+    def test_inline_blanks_are_filled_end_to_end(
+        self, requirements_docx, knowledge_dir, results_dir, tmp_path
+    ):
+        """Форма с несколькими пропусками в одном абзаце (п. 15.1-стиль):
+        построчный механизм такое не различает — каждый пропуск должен
+        получить своё, отдельное значение через inline_query."""
+        template = tmp_path / "multi_blank_form.docx"
+        _multi_blank_docx(template)
+
+        model = CachingScriptedModel({
+            # без обычных полей в этом шаблоне — только инлайн-пропуски
+            Marker.FORM_FIELDS: as_json({"fields": []}),
+            Marker.INLINE_BLANKS: as_json({
+                "1": {"value": "САО «ВСК»", "status": "found", "source": "", "note": ""},
+                "2": {"value": "Россия", "status": "found", "source": "", "note": ""},
+            }),
+        })
+
+        application = TenderApplication(
+            application_template_path=str(template),
+            tender_info_path=str(requirements_docx),
+            normative_base_folder=str(knowledge_dir),
+            tender_form=AITenderForm(tender_query=TenderAIQuery(ai_model=model)),
+            report=TenderApplicationReport(output_dir=str(results_dir)),
+            results_path=str(results_dir),
+            inline_query=InlineBlanksQuery(ai_model=model),
+        )
+
+        result = application.result()
+
+        statuses = {f.anchor: f.status for f in result.fields if f.kind == "inline"}
+        assert len(statuses) == 2
+        assert all(status is FieldStatus.FOUND for status in statuses.values())
+
+        # Ответы уходят в колонку справа, текст требования остаётся как был
+        row = Document(result.filled_path).tables[0].rows[0]
+        assert "САО «ВСК»" in row.cells[1].text
+        assert "Россия" in row.cells[1].text
+        assert "___" in row.cells[0].text
+
+    def test_without_inline_query_only_old_mechanism_runs(
+        self, requirements_docx, knowledge_dir, results_dir, tmp_path
+    ):
+        """inline_query не задан (по умолчанию None) — поведение как раньше,
+        никакой попытки разобрать инлайн-пропуски."""
+        template = tmp_path / "multi_blank_form.docx"
+        _multi_blank_docx(template)
+
+        model = ScriptedModel({Marker.FORM_FIELDS: as_json({"fields": []})})
+        application = TenderApplication(
+            application_template_path=str(template),
+            tender_info_path=str(requirements_docx),
+            normative_base_folder=str(knowledge_dir),
+            tender_form=AITenderForm(tender_query=TenderAIQuery(ai_model=model)),
+            report=TenderApplicationReport(output_dir=str(results_dir)),
+            results_path=str(results_dir),
+        )
+
+        result = application.result()
+
+        assert result.fields == []
+        assert model.call_count(Marker.INLINE_BLANKS) == 0

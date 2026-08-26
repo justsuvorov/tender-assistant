@@ -88,6 +88,7 @@ class TestSectionsMatcher:
         })
         result = DocumentList(
             report=DocumentListReport(output_dir=str(results_dir)),
+            results_path=str(results_dir),
             document_sections=sections,
             sections_matcher=SectionsMatcher(ai_model=model),
             context_matcher=ContextMatcher(ai_model=model),
@@ -177,6 +178,7 @@ class TestDocumentList:
     def _build(self, sections, model, results_dir, normative_folder=None):
         return DocumentList(
             report=DocumentListReport(output_dir=str(results_dir)),
+            results_path=str(results_dir),
             document_sections=sections,
             sections_matcher=SectionsMatcher(
                 ai_model=model, response_post_processor=SectionsMatcherResponse()
@@ -225,6 +227,27 @@ class TestDocumentList:
         assert "Перечень документов для заявки" in report
         assert "Выписка из ЕГРЮЛ" in report
         assert "Исключено при проверке по нормативной базе" in report
+
+    def test_formatted_document_is_written_alongside_the_report(
+        self, sections, scripted_model, results_dir, normative_dir
+    ):
+        """Перечень оформляется в Word вдобавок к markdown-отчёту, не вместо."""
+        from docx import Document as ReadDocx
+        from pathlib import Path
+
+        result = self._build(
+            sections, scripted_model, results_dir, str(normative_dir)
+        ).result()
+
+        assert result.formatted_path is not None
+        assert result.formatted_path != result.report_path
+        assert Path(result.formatted_path).exists()
+        assert Path(result.formatted_path).suffix == ".docx"
+
+        table = ReadDocx(result.formatted_path).tables[0]
+        assert [row.cells[1].text for row in table.rows[1:]] == [
+            d.name for d in result.documents
+        ]
 
     def test_without_normative_checker_nothing_is_excluded(
         self, sections, scripted_model, results_dir

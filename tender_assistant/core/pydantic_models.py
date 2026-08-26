@@ -25,6 +25,9 @@ class DocumentListResult(BaseModel):
         default_factory=list, description="Заголовки разделов, из которых взят перечень"
     )
     report_path: Optional[str] = None
+    formatted_path: Optional[str] = Field(
+        None, description="Оформленный перечень документов (Word)"
+    )
 
 
 # ── Этап 2: подготовка файлов ─────────────────────────────────────────────────
