@@ -1,0 +1,69 @@
+services:
+
+  api:
+    build: .
+    container_name: tender_assistant
+    restart: always
+    ports:
+      # GUI по умолчанию ходит на localhost:8000 (см. app/config.json)
+      - "${API_PORT:-8000}:80"
+    volumes:
+      # Пути в запросе POST /api/update разрешаются ВНУТРИ контейнера,
+      # поэтому клиент должен присылать /app/tenders/..., а не C:\... или ./...
+      - ./tenders:/app/tenders                    # требования тендера и шаблоны заявок
+      - ./documents:/app/documents                # архив документов организации
+      - ./normative_base:/app/normative_base      # нормативная база (этап 1)
+      - ./knowledge_base:/app/knowledge_base      # эталонные заявки и реквизиты (этап 3)
+      - ./results:/app/results                    # перечень, комплект, заполненная заявка
+    environment:
+      # Провайдер: gemini | anthropic | ollama | qwen | vsk
+      - AI_PROVIDER=${AI_PROVIDER:-vsk}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0.2}
+
+      # Куда складываются отчёты, если results_path не задан в запросе
+      - RESULTS_ROOT=${RESULTS_ROOT:-/app/results}
+
+      # Ограничение окна при сборке промпта: 0 — по провайдеру
+      # (self-hosted берут LLM_NUM_CTX, облачные промпт не режут)
+      - PROMPT_CONTEXT_WINDOW=${PROMPT_CONTEXT_WINDOW:-0}
+
+      # VSK AI (OpenAI-совместимый /v1/chat/completions)
+      - VSK_API_URL=${VSK_API_URL}
+      - VSK_API_KEY=${VSK_API_KEY}
+      - VSK_MODEL_NAME=${VSK_MODEL_NAME:-Qwen3.6-35B-A3B-NVFP4}
+      - VSK_MAX_TOKENS=${VSK_MAX_TOKENS:-100000}
+      - VSK_THINKING_TOKEN_BUDGET=${VSK_THINKING_TOKEN_BUDGET:-1000}
+
+      # Qwen (OpenAI-совместимый /v1/completions)
+      - QWEN_API_URL=${QWEN_API_URL:-}
+      - QWEN_MODEL_NAME=${QWEN_MODEL_NAME:-Qwen3.6-35B-A3B-NVFP4}
+      - QWEN_MAX_TOKENS=${QWEN_MAX_TOKENS:-100000}
+
+      # Ollama (локально или на GPU-сервере)
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://localhost:11434}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-qwen2.5:14b}
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-32768}
+
+      # Облачные провайдеры — ключи только из .env, без значений по умолчанию
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_MODEL_NAME=${AI_MODEL_NAME:-gemini-2.0-flash}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL_NAME=${ANTHROPIC_MODEL_NAME:-claude-sonnet-5}
+
+      # Модуль запуска: образ иначе поднял бы app/main.py (GUI). См. Dockerfile.
+      - MODULE_NAME=main
+      - VARIABLE_NAME=app
+
+      # Gunicorn. Этап 3 — десятки последовательных запросов к LLM: один прогон
+      # на реальной документации занимает 5–10 минут, поэтому таймаут большой
+      # и совпадает с request_timeout в app/config.json.
+      - MAX_WORKERS=${MAX_WORKERS:-2}
+      - TIMEOUT=${TIMEOUT:-3600}
+      - GRACEFUL_TIMEOUT=${GRACEFUL_TIMEOUT:-3600}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:80/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

@@ -1,0 +1,25 @@
+# Настольный интерфейс: в контейнере не нужен, тянет PySide6/edifice.
+# Он же перекрыл бы автовыбор модуля запуска (см. комментарий в Dockerfile).
+app/
+
+# Тесты и рабочие материалы
+tests/
+dumps/
+results/
+pytest.ini
+requirements-dev.txt
+
+# Секреты: переменные приходят из docker-compose, а не из образа
+.env
+
+# Локальное окружение и мусор
+.git/
+.gitignore
+.idea/
+.vscode/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.log
+~$*
