@@ -31,11 +31,24 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 
 # ── Пути ──────────────────────────────────────────────────────────────────────
 
-# В собранном EXE рабочей папкой считается текущая, в разработке — корень проекта.
+# Два разных "рядом": APP_DIR — где лежат РЕДАКТИРУЕМЫЕ файлы (config.json,
+# app.log), RESOURCE_DIR — где лежат статичные ресурсы, зашитые в сборку
+# PyInstaller (assets). В dev-режиме это одно и то же — папка app/. В собранном
+# EXE (frozen) — РАЗНЫЕ места: sys.executable указывает на сам .exe (то, что
+# видит и может редактировать пользователь), а sys._MEIPASS — на временную
+# распаковку бандла (создаётся заново при каждом запуске и удаляется при
+# выходе). Если писать app.log или читать config.json через Path(__file__)
+# во frozen-режиме, оба резолвятся ВНУТРЬ _MEIPASS: log потеряется при
+# закрытии, а правка config.json рядом с .exe останется незамеченной —
+# запущенный процесс её не увидит.
 if getattr(sys, "frozen", False):
-    BASE_DIR = Path.cwd()
+    APP_DIR = Path(sys.executable).parent
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+    BASE_DIR = APP_DIR
 else:
-    BASE_DIR = Path(__file__).parent.parent
+    APP_DIR = Path(__file__).parent
+    RESOURCE_DIR = APP_DIR
+    BASE_DIR = APP_DIR.parent
 
 TENDERS_DIR = BASE_DIR / "tenders"
 DOCUMENTS_DIR = BASE_DIR / "documents"
@@ -43,12 +56,12 @@ NORMATIVE_DIR = BASE_DIR / "normative_base"
 KNOWLEDGE_DIR = BASE_DIR / "knowledge_base"
 RESULTS_DIR = BASE_DIR / "results"
 
-_ASSETS = Path(__file__).parent / "assets"
+_ASSETS = RESOURCE_DIR / "assets"
 _LOGO_PATH = _ASSETS / "vsk_logo.png"
 
 # ── Логирование ───────────────────────────────────────────────────────────────
 
-_LOG_PATH = Path(__file__).parent / "app.log"
+_LOG_PATH = APP_DIR / "app.log"
 _LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}"
 
 logger.remove()
@@ -57,7 +70,7 @@ logger.add(lambda msg: print(msg, end=""), format=_LOG_FORMAT)
 
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
-_CONFIG_PATH = Path(__file__).parent / "config.json"
+_CONFIG_PATH = APP_DIR / "config.json"
 
 _DEFAULT_CONFIG = {
     "api_base_url": "http://localhost:8000",

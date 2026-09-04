@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Инструкция: как Tender Assistant собирает перечень документов, ищет файлы в архиве и заполняет форму заявки — построчно и по пропускам внутри пунктов.">
+<title>Подготовка тендерной заявки</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root{
+    --ground:#EEF0EC;
+    --surface:#FFFFFF;
+    --surface-sunk:#E2E7E1;
+    --ink:#1A2019;
+    --ink-soft:#414B41;
+    --muted:#6B7669;
+    --line:#CDD5CA;
+    --line-soft:#DEE4DB;
+    --accent:#363873;
+    --accent-deep:#23244C;
+    --accent-wash:#E7E7F1;
+    --ok:#1E7A45;
+    --ok-wash:#E0F0E5;
+    --warn:#9C6414;
+    --warn-wash:#F5E9D6;
+    --crit:#A32F2F;
+    --crit-wash:#F5E1E0;
+    --code-bg:#E4E8E1;
+    --code-ink:#2B2D5E;
+
+    --sp-1:.35rem; --sp-2:.7rem; --sp-3:1.1rem; --sp-4:1.7rem; --sp-5:2.6rem; --sp-6:4rem;
+    --measure:70ch;
+    --radius:5px;
+  }
+
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#14181A;
+      --surface:#1D2325;
+      --surface-sunk:#171C1D;
+      --ink:#E7ECE6;
+      --ink-soft:#BFC9BF;
+      --muted:#8A968A;
+      --line:#2D3532;
+      --line-soft:#242B28;
+      --accent:#9496D6;
+      --accent-deep:#C4C6EC;
+      --accent-wash:#23253F;
+      --ok:#5FBF87;
+      --ok-wash:#16281D;
+      --warn:#E0A94F;
+      --warn-wash:#2E2312;
+      --crit:#E28080;
+      --crit-wash:#301B1B;
+      --code-bg:#171C1D;
+      --code-ink:#A9ABE8;
+    }
+  }
+
+  :root[data-theme="dark"]{
+    --ground:#14181A;
+    --surface:#1D2325;
+    --surface-sunk:#171C1D;
+    --ink:#E7ECE6;
+    --ink-soft:#BFC9BF;
+    --muted:#8A968A;
+    --line:#2D3532;
+    --line-soft:#242B28;
+    --accent:#9496D6;
+    --accent-deep:#C4C6EC;
+    --accent-wash:#23253F;
+    --ok:#5FBF87;
+    --ok-wash:#16281D;
+    --warn:#E0A94F;
+    --warn-wash:#2E2312;
+    --crit:#E28080;
+    --crit-wash:#301B1B;
+    --code-bg:#171C1D;
+    --code-ink:#A9ABE8;
+  }
+
+  *{box-sizing:border-box;}
+
+  body{
+    margin:0;
+    background:var(--ground);
+    color:var(--ink);
+    font-family:"Public Sans",-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:16px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  code,kbd,pre,.mono{font-family:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;}
+
+  /* ── Shell ────────────────────────────────────────────────── */
+  .shell{max-width:1180px; margin:0 auto; padding:0 var(--sp-4) var(--sp-6);}
+
+  .masthead{
+    padding:var(--sp-6) 0 var(--sp-4);
+    border-bottom:2px solid var(--ink);
+    margin-bottom:var(--sp-5);
+  }
+  .eyebrow{
+    font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; font-weight:600;
+    color:var(--accent); margin:0 0 var(--sp-2);
+  }
+  h1{
+    font-family:"Spectral",Georgia,serif;
+    font-weight:700; font-size:clamp(2rem,4.4vw,3rem); line-height:1.12;
+    letter-spacing:-.01em; margin:0 0 var(--sp-3); text-wrap:balance;
+  }
+  .standfirst{font-size:1.08rem; color:var(--ink-soft); max-width:64ch; margin:0;}
+
+  .layout{display:grid; grid-template-columns:1fr; gap:var(--sp-5);}
+  @media(min-width:1000px){
+    .layout{grid-template-columns:248px minmax(0,1fr); gap:var(--sp-6);}
+  }
+
+  /* ── Contents rail ────────────────────────────────────────── */
+  nav.toc{align-self:start;}
+  @media(min-width:1000px){
+    nav.toc{position:sticky; top:var(--sp-4); max-height:calc(100vh - 3rem); overflow-y:auto;}
+  }
+  .toc-title{
+    font-size:.7rem; letter-spacing:.14em; text-transform:uppercase;
+    font-weight:600; color:var(--muted);
+    margin:0 0 var(--sp-2); padding-bottom:var(--sp-2);
+    border-bottom:1px solid var(--line);
+  }
+  .toc ol{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; counter-reset:toc;}
+  .toc a{
+    display:flex; gap:.6rem; align-items:baseline;
+    padding:.34rem .5rem; color:var(--ink-soft); text-decoration:none;
+    font-size:.9rem; border-radius:4px; border-left:2px solid transparent;
+  }
+  .toc a::before{
+    counter-increment:toc; content:counter(toc) ".";
+    font-family:"JetBrains Mono",monospace; font-size:.72rem;
+    color:var(--muted); font-variant-numeric:tabular-nums;
+  }
+  .toc a:hover{background:var(--accent-wash); color:var(--accent-deep); border-left-color:var(--accent);}
+  .toc a:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+
+  /* ── Sections ─────────────────────────────────────────────── */
+  section{scroll-margin-top:1.5rem; padding-top:var(--sp-4); margin-bottom:var(--sp-5);}
+  section + section{border-top:1px solid var(--line-soft);}
+
+  h2{
+    font-family:"Spectral",Georgia,serif;
+    font-size:1.6rem; font-weight:700; line-height:1.2; letter-spacing:-.005em;
+    margin:0 0 var(--sp-3); text-wrap:balance;
+    display:flex; align-items:baseline; gap:.6rem;
+  }
+  h2 .num{
+    font-family:"JetBrains Mono",monospace; font-weight:500; font-size:1rem;
+    color:var(--accent);
+  }
+  h3{font-size:1.02rem; font-weight:600; margin:var(--sp-4) 0 var(--sp-2); color:var(--ink);}
+  h4{
+    font-size:.78rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--muted); margin:var(--sp-3) 0 var(--sp-1);
+  }
+  p{margin:0 0 var(--sp-3); max-width:var(--measure);}
+  ul,ol{margin:0 0 var(--sp-3); padding-left:1.2rem; max-width:var(--measure);}
+  li{margin-bottom:.32rem;}
+  li::marker{color:var(--muted);}
+  strong{font-weight:600;}
+  a{color:var(--accent-deep); text-underline-offset:2px;}
+
+  code:not(pre code){
+    font-size:.87em; background:var(--code-bg); color:var(--code-ink);
+    padding:.1em .38em; border-radius:3px; white-space:nowrap;
+  }
+
+  pre{
+    margin:0 0 var(--sp-3); background:var(--surface-sunk); border:1px solid var(--line);
+    border-radius:var(--radius); padding:var(--sp-3); overflow-x:auto;
+    font-size:.83rem; line-height:1.62;
+  }
+  pre code{color:var(--ink-soft); background:none; padding:0; white-space:pre;}
+  .c-key{color:var(--accent-deep); font-weight:500;}
+  .c-note{color:var(--muted);}
+  .c-ok{color:var(--ok);}
+  .c-warn{color:var(--warn);}
+  .c-crit{color:var(--crit);}
+
+  /* ── Tables ───────────────────────────────────────────────── */
+  .scroll-x{overflow-x:auto; margin-bottom:var(--sp-3); border:1px solid var(--line); border-radius:var(--radius);}
+  table{border-collapse:collapse; width:100%; font-size:.9rem;}
+  th,td{text-align:left; padding:.6rem .8rem; border-bottom:1px solid var(--line-soft); vertical-align:top;}
+  thead th{
+    background:var(--surface-sunk); font-size:.72rem; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--muted); font-weight:600; white-space:nowrap;
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  td code{white-space:nowrap;}
+  td.num, th.num{font-variant-numeric:tabular-nums; font-family:"JetBrains Mono",monospace;}
+
+  /* ── Status chips ─────────────────────────────────────────── */
+  .chip{
+    display:inline-flex; align-items:center; gap:.4rem;
+    font-size:.78rem; font-weight:600; padding:.14rem .55rem .14rem .45rem;
+    border-radius:99px; white-space:nowrap; line-height:1.5;
+  }
+  .chip::before{content:""; width:.5rem; height:.5rem; border-radius:50%; flex:none;}
+  .chip.ok{background:var(--ok-wash); color:var(--ok);}
+  .chip.ok::before{background:var(--ok);}
+  .chip.warn{background:var(--warn-wash); color:var(--warn);}
+  .chip.warn::before{background:var(--warn);}
+  .chip.crit{background:var(--crit-wash); color:var(--crit);}
+  .chip.crit::before{background:var(--crit);}
+
+  /* ── Callouts ─────────────────────────────────────────────── */
+  .note{
+    border-left:3px solid var(--accent); background:var(--accent-wash);
+    padding:var(--sp-3); border-radius:0 var(--radius) var(--radius) 0;
+    margin:0 0 var(--sp-3); max-width:var(--measure);
+  }
+  .note.warn{border-left-color:var(--warn); background:var(--warn-wash);}
+  .note.crit{border-left-color:var(--crit); background:var(--crit-wash);}
+  .note p:last-child{margin-bottom:0;}
+  .note-label{
+    display:block; font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; font-weight:600;
+    color:var(--accent-deep); margin-bottom:.3rem;
+  }
+  .note.warn .note-label{color:var(--warn);}
+  .note.crit .note-label{color:var(--crit);}
+
+  /* ── Pipeline ─────────────────────────────────────────────── */
+  .pipeline{list-style:none; padding:0; margin:0 0 var(--sp-3); counter-reset:step; max-width:none;}
+  .pipeline li{
+    display:grid; grid-template-columns:2rem 1fr; gap:var(--sp-3);
+    padding:var(--sp-3) 0; border-bottom:1px solid var(--line-soft); margin:0;
+  }
+  .pipeline li:last-child{border-bottom:none;}
+  .pipeline li::before{
+    counter-increment:step; content:counter(step);
+    font-family:"JetBrains Mono",monospace; font-weight:600; font-size:.85rem;
+    color:var(--accent); border:1px solid var(--line); border-radius:50%;
+    width:2rem; height:2rem; display:grid; place-items:center; background:var(--surface);
+  }
+  .pipeline b{display:block; font-weight:600; margin-bottom:.15rem;}
+  .pipeline span{color:var(--ink-soft); font-size:.93rem;}
+  .pipeline .where{
+    display:inline-block; font-family:"JetBrains Mono",monospace;
+    font-size:.75rem; color:var(--muted); margin-top:.3rem;
+  }
+
+  /* ── Blank/answer mockup ──────────────────────────────────── */
+  .clause{
+    border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;
+    margin:0 0 var(--sp-3); background:var(--surface); max-width:none;
+  }
+  .clause-head{
+    display:flex; align-items:baseline; gap:.6rem;
+    padding:.6rem var(--sp-3); background:var(--surface-sunk);
+    border-bottom:1px solid var(--line); font-size:.78rem;
+  }
+  .clause-num{font-family:"JetBrains Mono",monospace; font-weight:600; color:var(--accent);}
+  .clause-src{color:var(--muted);}
+  .clause-body{display:grid; grid-template-columns:1fr; gap:0;}
+  @media(min-width:720px){ .clause-body{grid-template-columns:1.3fr 1fr;} }
+  .clause-text{
+    padding:var(--sp-3); border-bottom:1px solid var(--line-soft);
+    font-family:"Spectral",Georgia,serif; font-size:.98rem; line-height:1.65; color:var(--ink-soft);
+  }
+  @media(min-width:720px){
+    .clause-text{border-bottom:none; border-right:1px solid var(--line-soft);}
+  }
+  .blank{
+    font-family:"JetBrains Mono",monospace; color:var(--muted);
+    border-bottom:1.5px dotted var(--muted); padding:0 .1em;
+  }
+  .clause-answers{padding:var(--sp-3); display:flex; flex-direction:column; gap:.55rem; background:var(--surface-sunk);}
+  .answer-row{display:flex; flex-direction:column; gap:.15rem;}
+  .answer-label{font-size:.74rem; color:var(--muted);}
+  .answer-value{
+    display:inline-flex; align-self:flex-start; align-items:center; gap:.4rem;
+    font-size:.88rem; font-weight:500; padding:.2rem .55rem; border-radius:4px;
+  }
+  .answer-value.ok{background:var(--ok-wash); color:var(--ok);}
+  .answer-value.warn{background:var(--warn-wash); color:var(--warn);}
+  .answer-value.crit{background:var(--crit-wash); color:var(--crit);}
+
+  /* ── Error cards ──────────────────────────────────────────── */
+  .err{
+    border:1px solid var(--line); border-radius:var(--radius); background:var(--surface);
+    margin-bottom:var(--sp-3); overflow:hidden;
+  }
+  .err > summary{
+    cursor:pointer; padding:var(--sp-3); display:flex; gap:.7rem; align-items:baseline;
+    font-weight:600; list-style:none;
+  }
+  .err > summary::-webkit-details-marker{display:none;}
+  .err > summary::after{
+    content:"+"; margin-left:auto; color:var(--muted);
+    font-family:"JetBrains Mono",monospace; font-weight:400;
+  }
+  .err[open] > summary::after{content:"–";}
+  .err > summary:hover{background:var(--surface-sunk);}
+  .err > summary:focus-visible{outline:2px solid var(--accent); outline-offset:-2px;}
+  .sev{
+    flex:none; font-size:.64rem; letter-spacing:.08em; text-transform:uppercase;
+    font-weight:600; padding:.16rem .45rem; border-radius:3px; position:relative; top:-1px;
+  }
+  .sev.crit{background:var(--crit-wash); color:var(--crit);}
+  .sev.warn{background:var(--warn-wash); color:var(--warn);}
+  .sev.info{background:var(--accent-wash); color:var(--accent-deep);}
+  .err-body{padding:0 var(--sp-3) var(--sp-3); border-top:1px solid var(--line-soft);}
+  .err-body > *:first-child{margin-top:var(--sp-3);}
+  .err-body p, .err-body ul, .err-body ol{max-width:none;}
+
+  .kv{display:grid; grid-template-columns:auto 1fr; gap:.3rem var(--sp-3); margin:0 0 var(--sp-3); font-size:.93rem;}
+  .kv dt{font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; padding-top:.25rem;}
+  .kv dd{margin:0;}
+
+  /* ── Contact ──────────────────────────────────────────────── */
+  .contact{
+    border:1px solid var(--accent); background:var(--accent-wash); border-radius:var(--radius);
+    padding:var(--sp-4); display:flex; flex-wrap:wrap; gap:var(--sp-3) var(--sp-5); align-items:flex-start;
+  }
+  .contact-who{font-family:"Spectral",Georgia,serif; font-size:1.15rem; font-weight:600; margin:0 0 .15rem;}
+  .contact a{font-family:"JetBrains Mono",monospace; font-size:.95rem; font-weight:500;}
+  .contact ul{margin:0; padding-left:1.1rem; font-size:.92rem; color:var(--ink-soft);}
+
+  footer{
+    margin-top:var(--sp-5); padding-top:var(--sp-3); border-top:1px solid var(--line);
+    font-size:.82rem; color:var(--muted);
+    display:flex; flex-wrap:wrap; gap:var(--sp-3); justify-content:space-between;
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important; transition:none !important; scroll-behavior:auto !important;}
+  }
+  html{scroll-behavior:smooth;}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">Tender Assistant · Инструкция оператора</p>
+    <h1>Подготовка тендерной заявки</h1>
+    <p class="standfirst">Как ассистент читает требования тендера, собирает перечень документов, ищет файлы в архиве и заполняет форму заявки — построчно и по пропускам внутри пронумерованных пунктов. Что настраивается через <code>.env</code>, сколько это стоит и что делать при ошибке.</p>
+  </header>
+
+  <div class="layout">
+
+    <nav class="toc" aria-label="Содержание">
+      <p class="toc-title">Содержание</p>
+      <ol>
+        <li><a href="#start">Перед запуском</a></li>
+        <li><a href="#pipeline">Как это работает</a></li>
+        <li><a href="#blanks">Пропуски внутри пунктов</a></li>
+        <li><a href="#inputs">Что подготовить</a></li>
+        <li><a href="#results">Результат и цвета</a></li>
+        <li><a href="#provider">Провайдер модели</a></li>
+        <li><a href="#cost">Скорость и стоимость</a></li>
+        <li><a href="#errors">Ошибки и что делать</a></li>
+        <li><a href="#contact">Куда писать</a></li>
+      </ol>
+    </nav>
+
+    <main>
+
+      <!-- ══ 1 ══ -->
+      <section id="start">
+        <h2><span class="num">1.</span> Перед запуском</h2>
+        <p>Комплект — две программы на одной машине. Обе запускаются без установки и прав администратора.</p>
+
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Что</th><th>Роль</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><code>Tender Assistant API.exe</code></td>
+                <td>Фоновый сервис: читает документы, обращается к модели, сохраняет результат. Без окна — только консоль с логом. <strong>Запускается первым</strong>, окно не закрывать.</td>
+              </tr>
+              <tr>
+                <td><code>Tender Assistant.exe</code></td>
+                <td>Окно с формой: выбор файлов и папок, кнопка «Подготовить заявку», сводка по трём этапам. Запускается вторым.</td>
+              </tr>
+              <tr>
+                <td><code>.env</code></td>
+                <td>Рядом с <code>Tender Assistant API.exe</code>: провайдер модели и его ключ. Настраивается один раз при развёртывании.</td>
+              </tr>
+              <tr>
+                <td><code>config.json</code></td>
+                <td>Рядом с <code>Tender Assistant.exe</code>: адрес API. По умолчанию <code>http://localhost:8000</code> — менять нужно, только если сервис поднят на другой машине.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note warn">
+          <span class="note-label">Ключ провайдера обязателен</span>
+          <p>В <code>.env</code> — <code>AI_PROVIDER</code> и ключ к нему: <code>GEMINI_API_KEY</code> для <code>gemini</code>, <code>ANTHROPIC_API_KEY</code> для <code>anthropic</code>. Без ключа первый же запрос вернёт ошибку от провайдера.</p>
+        </div>
+
+        <h3>Порядок запуска</h3>
+        <ol>
+          <li>Запустить <code>Tender Assistant API.exe</code> и дождаться строки <code>Uvicorn running on http://0.0.0.0:8000</code>.</li>
+          <li>Запустить <code>Tender Assistant.exe</code>.</li>
+        </ol>
+        <p>Либо одним файлом — <code>run-all.bat</code> запускает обе программы по порядку.</p>
+      </section>
+
+      <!-- ══ 2 ══ -->
+      <section id="pipeline">
+        <h2><span class="num">2.</span> Как это работает</h2>
+        <p>Один запрос проходит три этапа. Порядок важен: перечень документов из первого этапа передаётся во второй, третий не зависит ни от одного из них и выполняется параллельно по смыслу.</p>
+
+        <ol class="pipeline">
+          <li>
+            <div>
+              <b>Перечень документов</b>
+              <span>В требованиях тендера ищется раздел про состав заявки — по смыслу заголовка, а не по точному совпадению слов («Перечень документов», «Состав заявки», «Приложения к заявке» — любая формулировка). Найденный список сверяется с нормативной базой: то, что к вашей организации не относится (например, требования к ИП), исключается — с указанием причины.</span>
+              <span class="where">файлы: <code>document_list_*.md</code> + <code>Перечень документов_*.docx</code></span>
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>Подготовка документов</b>
+              <span>Каждый пункт перечня ищется в архиве по смыслу имени файла, а не по точному совпадению строки — <code>Выписка ЕГРЮЛ_2026.pdf</code> найдётся по запросу «Выписка из ЕГРЮЛ». Найденное копируется в папку комплекта.</span>
+              <span class="where">файлы: <code>documents_status_*.md</code> + папка комплекта</span>
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>Подготовка заявки</b>
+              <span>Два независимых механизма разбирают форму по-разному устроенные поля: построчный — метка в одной ячейке, значение в соседней; и отдельный — несколько разных по смыслу пропусков внутри одного пункта. Подробности — в следующем разделе.</span>
+              <span class="where">файлы: <code>application_fill_*.md</code> + заполненная форма</span>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <!-- ══ 3 ══ -->
+      <section id="blanks">
+        <h2><span class="num">3.</span> Пропуски внутри пунктов</h2>
+        <p>Тендерная документация часто ставит несколько разных по смыслу пропусков в одном предложении пронумерованного пункта:</p>
+
+        <div class="clause">
+          <div class="clause-head">
+            <span class="clause-num">15.1</span>
+            <span class="clause-src">форма заявки, п. 15.1 — реальный пример</span>
+          </div>
+          <div class="clause-body">
+            <div class="clause-text">
+              <span class="blank">_____________</span> (наименование участника закупки) имеет право на ведение деятельности в соответствии с законодательством <span class="blank">_____________</span> (наименование государства по месту нахождения участника закупки) и <span class="blank">_____________</span> (наименование государства по месту исполнения договора…).
+            </div>
+            <div class="clause-answers">
+              <div class="answer-row">
+                <span class="answer-label">наименование участника закупки</span>
+                <span class="answer-value ok">САО «ВСК»</span>
+              </div>
+              <div class="answer-row">
+                <span class="answer-label">государство по месту нахождения</span>
+                <span class="answer-value warn">Российская Федерация</span>
+              </div>
+              <div class="answer-row">
+                <span class="answer-label">государство по месту исполнения</span>
+                <span class="answer-value warn">Российская Федерация</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="note crit">
+          <span class="note-label">Текст пункта не переписывается</span>
+          <p>Ассистент <strong>никогда</strong> не подставляет значение вместо <span class="blank">_____</span> в самом тексте. Каждый ответ уходит в ячейку <strong>справа</strong> от текста требования, под меткой — какое именно значение к какому пропуску относится. В форму его вписывает человек. Автоматическая правка формулировки требования была бы незаметна при вычитке — риск того не стоит.</p>
+        </div>
+
+        <p>Если пропусков в абзаце меньше двух — это уже не тот случай: одиночный пропуск (например, «Руководитель организации: ______________») ассистент распознаёт как обычное поле построчного механизма и вписывает значение туда же, куда и остальные простые поля формы.</p>
+
+        <p>Разбор пропусков — один пакетный запрос на всю форму, а не по вызову на каждый пропуск: их в реальных формах бывает больше десятка.</p>
+      </section>
+
+      <!-- ══ 4 ══ -->
+      <section id="inputs">
+        <h2><span class="num">4.</span> Что подготовить</h2>
+        <p>Шесть полей в окне <code>Tender Assistant.exe</code> — точно как подписаны в интерфейсе.</p>
+
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Поле</th><th>Обяз.</th><th>Что это</th></tr></thead>
+            <tbody>
+              <tr><td>Требования тендера</td><td><span class="chip crit">да</span></td><td>Документ, из которого берётся перечень документов и часть данных для заявки (предмет закупки, сроки).</td></tr>
+              <tr><td>Папка с документами организации</td><td><span class="chip crit">да</span></td><td>Архив, где ищутся файлы для комплекта — устав, выписки, лицензии.</td></tr>
+              <tr><td>Шаблон заявки</td><td><span class="chip crit">да</span></td><td>Форма, которую нужно заполнить.</td></tr>
+              <tr><td>Папка для результатов</td><td><span class="chip crit">да</span></td><td>Куда лягут перечень, комплект и заполненная заявка.</td></tr>
+              <tr><td>Нормативная база</td><td><span class="chip warn">нет</span></td><td>По ней перечень документов проверяется на относимость к вашей организации.</td></tr>
+              <tr><td>База знаний и эталонные заявки</td><td><span class="chip warn">нет</span></td><td>Реквизиты и прошлые заявки — источник значений для заполнения формы.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Без двух необязательных источников этапы 1 и 3 всё равно выполняются — перечень не фильтруется по норме, а часть полей заявки останется без значения.</p>
+      </section>
+
+      <!-- ══ 5 ══ -->
+      <section id="results">
+        <h2><span class="num">5.</span> Результат и цвета</h2>
+        <p>После обработки в окне — сводка по трём этапам с кнопками «Открыть …». На диске, в выбранной папке результатов:</p>
+
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Файл</th><th>Этап</th></tr></thead>
+            <tbody>
+              <tr><td><code>Перечень документов_&lt;время&gt;.docx</code></td><td>1 — оформленная таблица требований</td></tr>
+              <tr><td><code>&lt;имя комплекта&gt;/</code></td><td>2 — скопированные файлы</td></tr>
+              <tr><td><code>&lt;шаблон&gt;_заполнено.docx</code></td><td>3 — заполненная заявка</td></tr>
+              <tr><td><code>*_*.md</code> (три файла)</td><td>диагностический отчёт по каждому этапу</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Статус документа (этап 2)</h3>
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Статус</th><th>Значит</th></tr></thead>
+            <tbody>
+              <tr><td><span class="chip ok">Есть</span></td><td>Файл найден однозначно, скопирован в комплект.</td></tr>
+              <tr><td><span class="chip warn">Проверить</span></td><td>Найдено несколько похожих файлов или совпадение неуверенное — выбор за человеком.</td></tr>
+              <tr><td><span class="chip crit">Нет</span></td><td>Подходящего файла в архиве не нашлось.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Статус значения (этап 3)</h3>
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Заливка</th><th>Значит</th></tr></thead>
+            <tbody>
+              <tr><td><span class="chip ok">Есть</span></td><td>Найдено дословно и однозначно.</td></tr>
+              <tr><td><span class="chip warn">Проверить</span></td><td>Найдено косвенно, устарело или встречается в нескольких вариантах.</td></tr>
+              <tr><td><span class="chip crit">Нет</span></td><td>В материалах не найдено — в поле стоит текст <code>НЕ НАЙДЕНО</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Массово жёлтые или красные поля — не сбой программы, а сигнал: в базе знаний нет нужных реквизитов, либо требования тендера читаются не тем разделом. Проверьте источники, а не повторяйте запуск.</p>
+      </section>
+
+      <!-- ══ 6 ══ -->
+      <section id="provider">
+        <h2><span class="num">6.</span> Провайдер модели</h2>
+        <p>Задаётся в <code>.env</code> одной переменной:</p>
+<pre><code><span class="c-key">AI_PROVIDER</span>=gemini   <span class="c-note"># gemini | anthropic | ollama | qwen | vsk</span></code></pre>
+
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Провайдер</th><th>Тип</th><th>Ключевые переменные</th></tr></thead>
+            <tbody>
+              <tr><td><code>gemini</code></td><td>облачный</td><td><code>GEMINI_API_KEY</code>, <code>AI_MODEL_NAME</code></td></tr>
+              <tr><td><code>anthropic</code></td><td>облачный</td><td><code>ANTHROPIC_API_KEY</code>, <code>ANTHROPIC_MODEL_NAME</code></td></tr>
+              <tr><td><code>ollama</code></td><td>своё железо</td><td><code>LLM_BASE_URL</code>, <code>LLM_MODEL_NAME</code>, <code>LLM_NUM_CTX</code></td></tr>
+              <tr><td><code>qwen</code></td><td>своё железо</td><td><code>QWEN_API_URL</code>, <code>QWEN_MODEL_NAME</code></td></tr>
+              <tr><td><code>vsk</code></td><td>своё железо</td><td><code>VSK_API_URL</code>, <code>VSK_API_KEY</code>, <code>VSK_MODEL_NAME</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <span class="note-label">Формулировки промптов — в коде, не в .env</span>
+          <p>В отличие от некоторых других инструментов на этом стеке, здесь роль модели и шаблоны запросов не вынесены в переменные окружения — они в <code>tender_assistant/core/config.py</code>. Через <code>.env</code> меняется провайдер и его параметры, а не текст промпта.</p>
+        </div>
+
+        <h3>Перезапуск после правки</h3>
+        <p><code>.env</code> читается один раз при старте — после изменения ключа или провайдера перезапустите <code>Tender Assistant API.exe</code>.</p>
+      </section>
+
+      <!-- ══ 7 ══ -->
+      <section id="cost">
+        <h2><span class="num">7.</span> Скорость и стоимость</h2>
+        <p>Реальная форма заявки (223-ФЗ, тестовый прогон) дала <strong>57 построчных полей и 13 пропусков</strong> — это минимум 58 обращений к модели на одну заявку, не считая этапов 1 и 2.</p>
+
+        <div class="note warn">
+          <span class="note-label">Без кэша один и тот же контекст уходит заново на каждое поле</span>
+          <p>Материалы (база знаний + требования тендера) отправляются на <strong>каждый</strong> запрос заполнения — на объёмном документе это ощутимый объём токенов, помноженный на число полей. Один тестовый прогон на форме с 47 полями и документом на 200 000 символов дал 3,89 млн входных токенов без кэша.</p>
+        </div>
+
+        <p>При <code>AI_PROVIDER=anthropic</code> материалы уходят отдельным кэшируемым блоком: первый вызов — по полной цене, следующие в течение ~5 минут — по цене чтения кэша. На том же прогоне это снизило объём до 464 тыс. эффективных токенов — разница примерно в <strong>8,4 раза</strong>. У остальных провайдеров кэш не используется — конкатенация как есть.</p>
+
+        <p>Пропуски внутри пунктов (раздел 3) всегда уходят <strong>одним пакетным запросом</strong> на всю форму — независимо от провайдера и числа пропусков.</p>
+
+        <h3>Повторные попытки при сбое</h3>
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Провайдер</th><th class="num">Попыток</th><th class="num">Пауза</th><th>Таймаут ответа</th></tr></thead>
+            <tbody>
+              <tr><td>Gemini / Anthropic</td><td class="num">3</td><td class="num">5 сек</td><td>по умолчанию SDK</td></tr>
+              <tr><td>Qwen</td><td class="num">3</td><td class="num">5 сек</td><td>600 сек</td></tr>
+              <tr><td>VSK AI</td><td class="num">5</td><td class="num">5 сек</td><td>60 сек</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Отдельно — до 3 попыток с паузой 1 сек, если провайдер вернул пустой ответ вместо ошибки. После исчерпания попыток запрос завершается ошибкой 502 (раздел 8).</p>
+      </section>
+
+      <!-- ══ 8 ══ -->
+      <section id="errors">
+        <h2><span class="num">8.</span> Ошибки и что делать</h2>
+        <p>Раскройте строку, чтобы увидеть причину и порядок действий.</p>
+
+        <details class="err">
+          <summary><span class="sev crit">400</span> Файл не найден</summary>
+          <div class="err-body">
+            <dl class="kv">
+              <dt>Причина</dt><dd>Путь, указанный в форме, не ведёт к реальному файлу.</dd>
+            </dl>
+            <p>Самая частая причина — файл переименован, перемещён, либо открыт в Word/Excel в этот момент (тогда рядом с ним появляется временный <code>~$имя.docx</code>, а сам файл всё равно должен существовать по исходному пути). Проверьте путь в поле формы и что файл не открыт в другой программе.</p>
+          </div>
+        </details>
+
+        <details class="err">
+          <summary><span class="sev crit">502</span> Ошибка провайдера модели</summary>
+          <div class="err-body">
+            <dl class="kv">
+              <dt>Причина</dt><dd>Провайдер не ответил после исчерпания всех попыток (см. таблицу в разделе 7).</dd>
+            </dl>
+            <p>Смотрите консоль <code>Tender Assistant API.exe</code> — там будет исходная причина: неверный ключ, недоступный адрес (<code>QWEN_API_URL</code> / <code>VSK_API_URL</code> для своего провайдера) или перегрузка сервиса. Перегрузка обычно проходит сама при повторном запуске.</p>
+          </div>
+        </details>
+
+        <details class="err">
+          <summary><span class="sev warn">422</span> Заполнены не все обязательные поля</summary>
+          <div class="err-body">
+            <p>Проверка происходит до обращения к модели. В окне будет указано, какое из четырёх обязательных полей (раздел 4) не заполнено.</p>
+          </div>
+        </details>
+
+        <details class="err">
+          <summary><span class="sev info">интерфейс</span> Окно показывает «Сервис недоступен»</summary>
+          <div class="err-body">
+            <p>Проверьте, что окно <code>Tender Assistant API.exe</code> запущено и в нём есть строка <code>Uvicorn running on http://0.0.0.0:8000</code>.</p>
+            <p>Если сервис поднят на другой машине или другом порту — адрес меняется в <code>config.json</code> рядом с <code>Tender Assistant.exe</code> (<code>api_base_url</code>), без пересборки.</p>
+          </div>
+        </details>
+
+        <details class="err">
+          <summary><span class="sev warn">формат</span> Шаблон заявки в PDF</summary>
+          <div class="err-body">
+            <p>Построчная запись значений возможна только в <code>.docx</code>/<code>.xlsx</code>. Для PDF-шаблона результат сохраняется отдельным файлом <code>.docx</code> — таблица «поле / значение» рядом с исходным шаблоном, а не заполненная копия самого PDF.</p>
+          </div>
+        </details>
+
+        <details class="err">
+          <summary><span class="sev warn">результат</span> Много полей со статусом «Нет» или «Проверить»</summary>
+          <div class="err-body">
+            <p>Это не ошибка выполнения — обработка дошла до конца. Причина обычно в источниках: база знаний не содержит нужных реквизитов, либо требования тендера не удалось разбить на разделы (документ без заголовков читается целиком, и раздел про документы может не выделиться).</p>
+            <p>Проверьте отчёт <code>document_list_*.md</code> — там видно, какой раздел был найден и что из него взято.</p>
+          </div>
+        </details>
+      </section>
+
+      <!-- ══ 9 ══ -->
+      <section id="contact">
+        <h2><span class="num">9.</span> Куда писать</h2>
+        <div class="contact">
+          <div>
+            <p class="contact-who">Суворов Юстин</p>
+            <a href="mailto:justsuvorov@gmail.com">justsuvorov@gmail.com</a>
+          </div>
+          <div>
+            <h4 style="margin-top:0">Приложите к письму</h4>
+            <ul>
+              <li>Лог консоли <code>Tender Assistant API.exe</code></li>
+              <li>Файл требований и шаблон заявки, на которых воспроизводится</li>
+              <li>Отчёты <code>*.md</code> из папки результатов, если они создались</li>
+              <li>Что ожидалось и что получилось фактически</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <span>Инструкция оператора · подготовка тендерной заявки</span>
+        <span>Tender Assistant</span>
+      </footer>
+
+    </main>
+  </div>
+</div>
+</body>
+</html>

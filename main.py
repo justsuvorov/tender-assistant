@@ -35,4 +35,9 @@ def submit(request: APIRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Объект app передаётся напрямую, а не строкой "main:app": reload=True
+    # запускает отдельный процесс-наблюдатель по пути к исходнику main.py —
+    # в собранном PyInstaller-бандле такого файла на диске нет, и запуск
+    # ломается. Для разработки с автоперезагрузкой используйте
+    # `uvicorn main:app --reload` из командной строки (см. README).
+    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1, log_level="info")
