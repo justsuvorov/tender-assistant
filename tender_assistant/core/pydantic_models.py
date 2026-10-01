@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -93,3 +93,6 @@ class AssistantResult(BaseModel):
         default_factory=ApplicationDocumentsResult
     )
     application: TenderApplicationResult = Field(default_factory=TenderApplicationResult)
+    # Этапы, которые не выполнились: {"document_list": "текст ошибки", ...}.
+    # Результаты остальных этапов при этом возвращаются как обычно.
+    errors: Dict[str, str] = Field(default_factory=dict)

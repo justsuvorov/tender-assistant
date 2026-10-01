@@ -10,6 +10,7 @@ from tender_assistant.reports.report_export import (
     DocumentListReport,
     ReportExport,
     TenderApplicationReport,
+    md_cell,
 )
 from tender_assistant.reports.report_models import ReportRow, TenderReport
 from tender_assistant.reports.style import GREEN, RED, YELLOW, document_fill, field_fill
@@ -153,3 +154,30 @@ class TestReportModels:
 
     def test_merge_of_nothing(self):
         assert TenderReport.merge([]).rows == []
+
+
+class TestMdCell:
+    def test_pipe_does_not_split_the_row(self):
+        assert md_cell("ИНН 7701 | КПП 7702") == "ИНН 7701 \\| КПП 7702"
+
+    def test_newlines_stay_inside_the_cell(self):
+        assert md_cell("г. Москва,\nул. Островная, 4\n") == "г. Москва,<br>ул. Островная, 4"
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_empty_value(self, value):
+        assert md_cell(value) == ""
+
+    def test_report_row_keeps_its_column_count(self):
+        from tender_assistant.application.application import TenderApplication
+        from tender_assistant.core.pydantic_models import (
+            FieldStatus, FilledField, TenderApplicationResult,
+        )
+
+        result = TenderApplicationResult(fields=[FilledField(
+            label="Адрес", value="г. Москва |\nул. Островная", status=FieldStatus.CHECK,
+        )])
+        rows = [line for line in TenderApplication._report_text(result).splitlines()
+                if line.startswith("| 1 |")]
+
+        assert len(rows) == 1
+        assert rows[0].replace("\\|", "").count("|") == 7  # 6 столбцов

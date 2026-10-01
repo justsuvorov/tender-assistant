@@ -9,3 +9,4 @@ pandas
 pdfplumber
 google-genai
 anthropic
+xlrd

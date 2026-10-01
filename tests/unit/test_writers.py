@@ -482,6 +482,15 @@ class TestTenderReportWriter:
         assert [c.text for c in rows[0].cells] == ["Поле", "Значение", "Примечание"]
         assert rows[1].cells[1].text == "ООО «Ромашка»"
 
+    def test_xls_template_falls_back_to_a_standalone_docx(self, tmp_path):
+        """.xls читается (pandas + xlrd), но openpyxl его не записывает."""
+        template = tmp_path / "form.xls"
+        template.write_bytes(b"\xd0\xcf\x11\xe0")
+
+        out = TenderReportWriter().write(FIELDS, tmp_path / "out.xls", template)
+
+        assert out.suffix == ".docx" and out.exists()
+
     def test_standalone_output_keeps_status_colours(self, tmp_path):
         template = tmp_path / "form.pdf"
         template.write_text("stub", encoding="utf-8")

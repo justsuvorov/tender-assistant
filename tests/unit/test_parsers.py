@@ -58,6 +58,14 @@ class TestDataParser:
         with pytest.raises(ValueError, match="Unsupported file format"):
             DataParser(str(path))
 
+    def test_legacy_doc_asks_to_resave_as_docx(self, tmp_path):
+        """python-docx не открывает .doc — нужна просьба пересохранить, а не
+        PackageNotFoundError из глубины разбора."""
+        path = tmp_path / "форма.doc"
+        path.write_bytes(b"\xd0\xcf\x11\xe0")  # сигнатура OLE2, как у настоящего .doc
+        with pytest.raises(ValueError, match="сохраните как '.docx'"):
+            DataParser(str(path))
+
     def test_missing_file_raises_a_clear_error(self, tmp_path):
         """Иначе наружу летит PackageNotFoundError из python-docx."""
         with pytest.raises(FileNotFoundError, match="Файл не найден"):

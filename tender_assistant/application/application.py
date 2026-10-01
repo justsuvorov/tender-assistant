@@ -24,10 +24,14 @@ from tender_assistant.core.pydantic_models import (
     FormField,
     TenderApplicationResult,
 )
-from tender_assistant.reports.report_export import BaseReport, TenderApplicationReport
+from tender_assistant.reports.report_export import (
+    BaseReport,
+    TenderApplicationReport,
+    md_cell,
+)
 from tender_assistant.reports.writers import ReportWriter, TenderReportWriter
 
-_WORD_SUFFIXES = {".docx", ".doc"}
+_WORD_SUFFIXES = {".docx"}
 
 
 # ── Шаблон заявки ─────────────────────────────────────────────────────────────
@@ -415,8 +419,8 @@ class TenderApplication:
         ]
         for i, field in enumerate(result.fields, start=1):
             lines.append(
-                f"| {i} | {field.label} | {field.value} | {labels[field.status]} "
-                f"| {field.source} | {field.note} |"
+                f"| {i} | {md_cell(field.label)} | {md_cell(field.value)} "
+                f"| {labels[field.status]} | {md_cell(field.source)} | {md_cell(field.note)} |"
             )
 
         counters = {status: 0 for status in FieldStatus}

@@ -416,15 +416,14 @@ class TenderReportWriter(ReportWriter):
     """Подбирает писателя под формат шаблона заявки.
 
     PDF-шаблоны заполнить нельзя, поэтому для них результат выгружается
-    в .docx рядом с исходным файлом.
+    в .docx рядом с исходным файлом. Так же — для .xls: прочитать его
+    можно (pandas + xlrd), а записать openpyxl не умеет.
     """
 
     _WRITERS = {
         ".docx": WordApplicationWriter,
-        ".doc": WordApplicationWriter,
         ".xlsx": ExcelApplicationWriter,
         ".xlsm": ExcelApplicationWriter,
-        ".xls": ExcelApplicationWriter,
     }
 
     def write(

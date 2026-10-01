@@ -237,8 +237,13 @@ class DataParser:
         ".xlsm": Excel,
         ".xls":  Excel,
         ".docx": Word,
-        ".doc":  Word,
         ".pdf":  PDF,
+    }
+
+    # Старые двоичные форматы, которые python-docx не открывает: вместо
+    # PackageNotFoundError из глубины разбора — понятная просьба пересохранить.
+    _LEGACY: dict[str, str] = {
+        ".doc": ".docx",
     }
 
     def __init__(self, file_path: str):
@@ -274,6 +279,11 @@ class DataParser:
 
     def _build_engine(self, file_path: str) -> Parser:
         ext = Path(file_path).suffix.lower()
+        if ext in self._LEGACY:
+            raise ValueError(
+                f"Формат '{ext}' не поддерживается — откройте файл в Word и "
+                f"сохраните как '{self._LEGACY[ext]}': {file_path}"
+            )
         parser_cls = self._SUPPORTED.get(ext)
         if parser_cls is None:
             raise ValueError(

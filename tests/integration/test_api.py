@@ -81,6 +81,32 @@ class TestUpdateErrors:
         assert "недоступен" in response.json()["detail"]
 
 
+class TestPartialFailure:
+    def test_failed_stage_does_not_cost_the_others(self, client, payload, monkeypatch):
+        """Сбой этапа 1 — ответ 200 с заполненной заявкой и текстом ошибки."""
+        from tests.fakes import Marker, ScriptedModel, as_json
+
+        def broken_headers(query):
+            raise RuntimeError("Ошибка Anthropic API: перегружен")
+
+        model = ScriptedModel({
+            Marker.HEADERS: broken_headers,
+            Marker.FORM_FIELDS: as_json({"fields": [{"label": "ИНН"}]}),
+            Marker.FIELD_VALUE: as_json(
+                {"value": "7701234567", "status": "found", "source": "", "note": ""}
+            ),
+        }, strict=False)
+        monkeypatch.setattr(ModelFactory, "create", staticmethod(lambda: model))
+
+        response = client.post("/api/update", json=payload)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert "перегружен" in body["errors"]["document_list"]
+        assert "prepared_documents" in body["errors"]
+        assert body["application"]["fields"][0]["value"] == "7701234567"
+
+
 class TestUpdateSuccess:
     @pytest.fixture
     def body(self, client, payload, with_fake_model):
@@ -90,9 +116,11 @@ class TestUpdateSuccess:
 
     def test_response_shape(self, body):
         assert set(body) == {
-            "request_id", "document_list", "prepared_documents", "application"
+            "request_id", "document_list", "prepared_documents", "application",
+            "errors",
         }
         assert body["request_id"] == 42
+        assert body["errors"] == {}
 
     def test_document_list_section(self, body):
         section = body["document_list"]

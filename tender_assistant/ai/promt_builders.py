@@ -52,7 +52,9 @@ class NormativeBaseLoader:
             return ""
 
     def _read_directory(self, directory: Path) -> str:
-        supported = set(DataParser._SUPPORTED) | self._PLAIN_TEXT
+        # Старые форматы (.doc) не пропускаем молча: _read_file получит от
+        # DataParser просьбу пересохранить файл и выведет её в лог.
+        supported = set(DataParser._SUPPORTED) | set(DataParser._LEGACY) | self._PLAIN_TEXT
         parts = []
 
         for file in sorted(directory.rglob("*")):

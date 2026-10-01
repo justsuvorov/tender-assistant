@@ -1,3 +1,6 @@
+import traceback
+from typing import Callable, List, Optional, TypeVar
+
 from tender_assistant.ai.model import AIModel, ModelFactory
 from tender_assistant.ai.postprocessor import (
     DocumentListResponse,
@@ -45,6 +48,8 @@ from tender_assistant.reports.report_export import (
 )
 from tender_assistant.reports.writers import TenderReportWriter
 
+T = TypeVar("T")
+
 
 class TenderAssistantService:
     """Собирает и выполняет три этапа подготовки тендерной заявки.
@@ -54,7 +59,8 @@ class TenderAssistantService:
     3. Заполнение шаблона заявки — по базе знаний и требованиям тендера.
 
     Этапы связаны по данным: перечень документов из этапа 1 идёт в этап 2.
-    Этап 3 от них не зависит и выполняется в любом случае.
+    Этап 3 от них не зависит и выполняется в любом случае — даже если
+    этап 1 или 2 упал; такие сбои возвращаются в ``AssistantResult.errors``.
     """
 
     def __init__(self, request: APIRequest, ai_model: AIModel = None):
@@ -63,15 +69,70 @@ class TenderAssistantService:
         self.prompt_engine = PromptEngine()
 
     def result(self) -> AssistantResult:
-        result = AssistantResult(request_id=self.request.message_id)
+        # Ошибки ввода (нет файла, неподдерживаемый формат) — до первого
+        # обращения к модели: такой запрос не должен тратить токены.
+        self._validate_inputs()
 
-        result.document_list = self._document_list().result()
-        result.prepared_documents = self._application_documents(
-            result.document_list.documents
-        ).result_set()
-        result.application = self._tender_application().result()
+        result = AssistantResult(request_id=self.request.message_id)
+        failures: List[Exception] = []
+
+        document_list = self._run_stage(
+            "document_list", lambda: self._document_list().result(), result, failures
+        )
+        if document_list is not None:
+            result.document_list = document_list
+            prepared = self._run_stage(
+                "prepared_documents",
+                lambda: self._application_documents(document_list.documents).result_set(),
+                result,
+                failures,
+            )
+            if prepared is not None:
+                result.prepared_documents = prepared
+        else:
+            result.errors["prepared_documents"] = (
+                "Этап пропущен: не получен перечень документов"
+            )
+
+        application = self._run_stage(
+            "application", lambda: self._tender_application().result(), result, failures
+        )
+        if application is not None:
+            result.application = application
+
+        # Ни один этап не выполнился — отдавать пустой «успешный» ответ нельзя:
+        # поднимаем первую ошибку, main.py превратит её в 400/502.
+        # Этап 2 без этапа 1 не запускается, поэтому достаточно проверить 1 и 3.
+        if document_list is None and application is None:
+            raise failures[0]
 
         return result
+
+    def _validate_inputs(self) -> None:
+        """Файлы, без которых этапы 1 и 3 не начнутся: существуют и читаются."""
+        DataParser(file_path=self.request.file_path)
+        DataParser(file_path=self.request.application_template_path)
+
+    @staticmethod
+    def _run_stage(
+        name: str,
+        stage: Callable[[], T],
+        result: AssistantResult,
+        failures: List[Exception],
+    ) -> Optional[T]:
+        """Выполняет этап; сбой записывается в result.errors, а не обрывает запрос.
+
+        Этап 3 не зависит от этапов 1–2: ошибка модели на перечне документов
+        не должна отнимать у пользователя заполненную заявку, и наоборот.
+        """
+        try:
+            return stage()
+        except Exception as exc:
+            print(f"[ERROR] Этап '{name}' не выполнен: {exc}", flush=True)
+            traceback.print_exc()
+            result.errors[name] = str(exc) or type(exc).__name__
+            failures.append(exc)
+            return None
 
     # ── Этап 1 ────────────────────────────────────────────────────────────────
 

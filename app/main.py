@@ -153,7 +153,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 # ── Диалоги выбора ────────────────────────────────────────────────────────────
 
-_DOC_FILTER = "Документы (*.docx *.doc *.xlsx *.xls *.pdf)"
+_DOC_FILTER = "Документы (*.docx *.xlsx *.xls *.pdf)"
 
 
 def _pick_file(title: str, start_dir: Path, filters: str = _DOC_FILTER) -> str:
@@ -384,8 +384,15 @@ def TenderAssistantApp(self):
             if response.ok:
                 data = response.json()
                 set_result(data)
-                set_status(f"Готово за {_fmt_long(time.time() - started)}")
-                logger.info("Обработка завершена успешно")
+                elapsed_text = _fmt_long(time.time() - started)
+                errors = data.get("errors") or {}
+                if errors:
+                    set_status(f"Выполнено частично за {elapsed_text} — "
+                               f"см. ошибки этапов ниже")
+                    logger.warning(f"Этапы с ошибками: {errors}")
+                else:
+                    set_status(f"Готово за {elapsed_text}")
+                    logger.info("Обработка завершена успешно")
             else:
                 message = _error_detail(response)
                 set_status(f"Ошибка {response.status_code}: {message}")
@@ -492,11 +499,19 @@ def TenderAssistantApp(self):
                 _results_view(result)
 
 
+def _stage_error(message):
+    """Сбой этапа: остальные этапы выполнены, этот — нет."""
+    if message:
+        Label(text=f"Этап не выполнен: {message}", word_wrap=True,
+              style={**label_s(), "color": _RED, "margin-bottom": "8px"})
+
+
 def _results_view(result: dict):
     """Сводка по трём этапам плюс кнопки открытия файлов."""
     document_list = result.get("document_list") or {}
     prepared = result.get("prepared_documents") or {}
     application = result.get("application") or {}
+    errors = result.get("errors") or {}
 
     documents = document_list.get("documents") or []
     excluded = document_list.get("excluded") or []
@@ -513,6 +528,7 @@ def _results_view(result: dict):
     with VBoxView(style=card()):
         Label(text="1. Перечень документов",
               style={**value_s(), "font-weight": "bold", "margin-bottom": "8px"})
+        _stage_error(errors.get("document_list"))
         _stat_row("Требуется документов:", str(len(documents)))
         if excluded:
             _stat_row("Исключено по нормативной базе:", str(len(excluded)), _MUTED)
@@ -533,6 +549,7 @@ def _results_view(result: dict):
     with VBoxView(style=card()):
         Label(text="2. Подготовка документов",
               style={**value_s(), "font-weight": "bold", "margin-bottom": "8px"})
+        _stage_error(errors.get("prepared_documents"))
         _stat_row("Есть:", str(count_rows("Есть")), _GREEN)
         _stat_row("Проверить:", str(count_rows("Проверить")), _YELLOW)
         _stat_row("Нет:", str(count_rows("Нет")), _RED)
@@ -553,6 +570,7 @@ def _results_view(result: dict):
     with VBoxView(style=card()):
         Label(text="3. Заполнение заявки",
               style={**value_s(), "font-weight": "bold", "margin-bottom": "8px"})
+        _stage_error(errors.get("application"))
         _stat_row("Заполнено:", str(count_fields("found")), _GREEN)
         _stat_row("Требует проверки:", str(count_fields("check")), _YELLOW)
         _stat_row("Не найдено:", str(count_fields("missing")), _RED)

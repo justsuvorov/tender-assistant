@@ -5,6 +5,17 @@ from typing import Optional
 from tender_assistant.core.config import settings
 
 
+def md_cell(value) -> str:
+    """Значение для ячейки markdown-таблицы.
+
+    Значения приходят от модели и из имён файлов: «|» разбил бы строку на
+    лишние столбцы, а перенос строки — оборвал бы таблицу.
+    """
+    text = str(value if value is not None else "")
+    text = text.replace("\\", "\\\\").replace("|", "\\|")
+    return "<br>".join(line.strip() for line in text.strip().splitlines())
+
+
 class BaseReport:
     """Формирует и сохраняет отчёт в markdown, возвращает путь к файлу.
 

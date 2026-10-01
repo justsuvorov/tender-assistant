@@ -51,6 +51,7 @@ SAMPLE_RESPONSE = {
         "filled_path": r"D:\r\form_заполнено.docx",
         "report_path": r"D:\r\application_fill.md",
     },
+    "errors": {"prepared_documents": "архив недоступен"},
 }
 
 
@@ -127,3 +128,7 @@ def test_all_three_stages_are_summarised(rendered, caption):
 ])
 def test_result_actions_are_offered(rendered, caption):
     assert caption in rendered["texts"]
+
+
+def test_stage_error_is_shown_in_its_card(rendered):
+    assert "Этап не выполнен: архив недоступен" in rendered["texts"]

@@ -14,7 +14,7 @@ from tender_assistant.ai.promt_builders import NormativeBaseLoader, PromptEngine
 from tender_assistant.core.config import settings
 from tender_assistant.core.parsers import DataParser, MarkdownOutline, Section
 from tender_assistant.core.pydantic_models import DocumentListResult, RequiredDocument
-from tender_assistant.reports.report_export import BaseReport, DocumentListReport
+from tender_assistant.reports.report_export import BaseReport, DocumentListReport, md_cell
 from tender_assistant.reports.writers import DocumentListWriter, ReportWriter
 
 
@@ -317,12 +317,12 @@ class DocumentList:
                   "| --- | --- | --- | --- |"]
         for i, doc in enumerate(result.documents, start=1):
             mandatory = "обязателен" if doc.mandatory else "по условию"
-            lines.append(f"| {i} | {doc.name} | {mandatory} | {doc.note} |")
+            lines.append(f"| {i} | {md_cell(doc.name)} | {mandatory} | {md_cell(doc.note)} |")
 
         if result.excluded:
             lines += ["", "## Исключено при проверке по нормативной базе", "",
                       "| Документ | Причина |", "| --- | --- |"]
             for doc in result.excluded:
-                lines.append(f"| {doc.name} | {doc.note} |")
+                lines.append(f"| {md_cell(doc.name)} | {md_cell(doc.note)} |")
 
         return "\n".join(lines)

@@ -192,6 +192,62 @@ class TestPipelineDegradation:
             TenderAssistantService(request=api_request, ai_model=scripted_model).result()
 
 
+class TestStageIsolation:
+    @staticmethod
+    def _raise(message):
+        def reply(query):
+            raise RuntimeError(message)
+        return reply
+
+    def test_stage_one_failure_skips_two_but_runs_three(self, api_request):
+        model = ScriptedModel({
+            Marker.HEADERS: self._raise("модель недоступна"),
+            Marker.FORM_FIELDS: as_json({"fields": [{"label": "ИНН"}]}),
+            Marker.FIELD_VALUE: as_json(
+                {"value": "7701234567", "status": "found", "source": "", "note": ""}
+            ),
+        }, strict=False)
+        result = TenderAssistantService(request=api_request, ai_model=model).result()
+
+        assert result.errors["document_list"] == "модель недоступна"
+        assert "перечень" in result.errors["prepared_documents"]
+        assert model.call_count(Marker.FILE_MATCH) == 0
+        assert result.application.fields[0].value == "7701234567"
+        assert Path(result.application.filled_path).exists()
+
+    def test_stage_three_failure_keeps_stages_one_and_two(
+        self, api_request, scripted_model
+    ):
+        scripted_model.replies[Marker.FORM_FIELDS] = self._raise("лимит исчерпан")
+        result = TenderAssistantService(
+            request=api_request, ai_model=scripted_model
+        ).result()
+
+        assert result.errors == {"application": "лимит исчерпан"}
+        assert len(result.document_list.documents) == 4
+        assert len(result.prepared_documents.rows) == 4
+
+    def test_when_every_stage_fails_the_error_is_raised(self, api_request):
+        model = ScriptedModel({
+            Marker.HEADERS: self._raise("сервис недоступен"),
+            Marker.FORM_FIELDS: self._raise("сервис недоступен"),
+        }, strict=False)
+        with pytest.raises(RuntimeError, match="сервис недоступен"):
+            TenderAssistantService(request=api_request, ai_model=model).result()
+
+    def test_bad_template_is_rejected_before_any_model_call(
+        self, api_request, scripted_model, tmp_path
+    ):
+        """Неверный ввод не должен тратить токены на этапы 1 и 2."""
+        bad = tmp_path / "form.doc"
+        bad.write_bytes(b"\xd0\xcf\x11\xe0")
+        api_request.application_template_path = str(bad)
+
+        with pytest.raises(ValueError, match="сохраните как '.docx'"):
+            TenderAssistantService(request=api_request, ai_model=scripted_model).result()
+        assert scripted_model.calls == []
+
+
 class TestModelUsage:
     def test_number_of_model_calls(self, api_request, scripted_model):
         TenderAssistantService(request=api_request, ai_model=scripted_model).result()

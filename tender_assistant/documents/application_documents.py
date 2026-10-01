@@ -13,7 +13,11 @@ from tender_assistant.core.pydantic_models import (
     PreparedDocument,
     RequiredDocument,
 )
-from tender_assistant.reports.report_export import ApplicationDocumentsReport, BaseReport
+from tender_assistant.reports.report_export import (
+    ApplicationDocumentsReport,
+    BaseReport,
+    md_cell,
+)
 
 
 class TitleMatcher:
@@ -233,9 +237,10 @@ class ApplicationDocuments:
             "| --- | --- | --- | --- | --- |",
         ]
         for i, row in enumerate(result.rows, start=1):
-            files = ", ".join(row.files)
+            files = md_cell(", ".join(row.files))
             lines.append(
-                f"| {i} | {row.name} | {row.status.value} | {files} | {row.note} |"
+                f"| {i} | {md_cell(row.name)} | {row.status.value} | {files} "
+                f"| {md_cell(row.note)} |"
             )
 
         counters = {status: 0 for status in DocumentStatus}
