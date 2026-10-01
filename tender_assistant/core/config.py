@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     # Явное ограничение окна для сборки промпта. 0 — брать из провайдера.
     prompt_context_window: int = Field(0, alias="PROMPT_CONTEXT_WINDOW")
 
+    # --- ЖУРНАЛ ---
+    # DEBUG добавляет начало каждого промпта и ответа модели — для разбора
+    # ошибок; в журнал тогда попадают данные из документов.
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
+    # Относительный путь — от папки с EXE (собранный сервис) или от текущей.
+    log_dir: str = Field("logs", alias="LOG_DIR")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

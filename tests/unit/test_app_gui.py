@@ -77,7 +77,7 @@ class TestMissingInputs:
         assert gui.missing_inputs(**inputs) == []
 
     @pytest.mark.parametrize("field, name", [
-        ("requirements_file", "файл требований тендера"),
+        ("requirements_file", "файл требований конкурса"),
         ("archive_folder", "папку с документами"),
         ("template_file", "шаблон заявки"),
         ("results_folder", "папку для результатов"),

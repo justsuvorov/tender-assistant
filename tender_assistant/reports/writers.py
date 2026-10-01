@@ -1,3 +1,4 @@
+import logging
 import re
 import shutil
 from abc import ABC, abstractmethod
@@ -17,6 +18,8 @@ from tender_assistant.core.parsers import find_inline_blanks, xml_path
 from tender_assistant.core.pydantic_models import DocumentListResult, FieldStatus, FilledField
 from tender_assistant.reports.style import HEADER as _HEADER
 from tender_assistant.reports.style import field_fill as _field_fill
+
+logger = logging.getLogger(__name__)
 
 
 # ── Подсветка в Word ──────────────────────────────────────────────────────────
@@ -108,11 +111,8 @@ class WordApplicationWriter(ReportWriter):
             self._append_unmatched(document, remaining)
 
         document.save(str(output_path))
-        print(
-            f"[INFO] Заявка заполнена: {len(fields) - len(remaining)}/{len(fields)} "
-            f"полей размещено в шаблоне",
-            flush=True,
-        )
+        logger.info(f"Заявка заполнена: {len(fields) - len(remaining)}/{len(fields)} "
+            f"полей размещено в шаблоне")
         return output_path
 
     def _fill_tables(
@@ -368,11 +368,8 @@ class ExcelApplicationWriter(ReportWriter):
                 placed += 1
 
         workbook.save(output_path)
-        print(
-            f"[INFO] Заявка заполнена: {placed}/{len(fields)} полей "
-            f"размещено в шаблоне",
-            flush=True,
-        )
+        logger.info(f"Заявка заполнена: {placed}/{len(fields)} полей "
+            f"размещено в шаблоне")
         return output_path
 
     def _fill_field(self, workbook, field: FilledField, wrap: Alignment) -> bool:
@@ -436,11 +433,8 @@ class TenderReportWriter(ReportWriter):
         writer_cls = self._WRITERS.get(suffix)
 
         if writer_cls is None:
-            print(
-                f"[WARN] Формат шаблона '{suffix}' не поддерживает заполнение — "
-                f"результат будет выгружен в .docx",
-                flush=True,
-            )
+            logger.warning(f"Формат шаблона '{suffix}' не поддерживает заполнение — "
+                f"результат будет выгружен в .docx")
             return self._write_standalone(fields, output_path.with_suffix(".docx"))
 
         return writer_cls().write(fields, output_path, source_path)
@@ -496,7 +490,7 @@ class DocumentListWriter(ReportWriter):
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         document = Document()
-        document.add_heading("Перечень документов для участия в закупке", level=1)
+        document.add_heading("Перечень документов для участия в конкурсе", level=1)
 
         if result.source_headers:
             note = document.add_paragraph(
@@ -513,7 +507,7 @@ class DocumentListWriter(ReportWriter):
             self._write_excluded_table(document, result)
 
         document.save(str(output_path))
-        print(f"[INFO] Перечень документов оформлен: {output_path}", flush=True)
+        logger.info(f"Перечень документов оформлен: {output_path}")
         return output_path
 
     def _write_documents_table(self, document: Document, result: DocumentListResult) -> None:

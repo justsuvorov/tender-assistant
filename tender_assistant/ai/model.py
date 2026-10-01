@@ -1,9 +1,13 @@
+import logging
 import re
 import time
 import httpx
 from abc import ABC, abstractmethod
 
+from tender_assistant.ai.context_builder import TokenEstimator
 from tender_assistant.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # SDK провайдеров импортируются лениво: в установке достаточно пакета
 # только того провайдера, который указан в AI_PROVIDER.
@@ -29,6 +33,80 @@ class AIModel(ABC):
         Переопределяется там, где ``supports_prompt_caching = True``.
         """
         return self.response(cache_prefix + query)
+
+
+# ── Журналирование вызовов ────────────────────────────────────────────────────
+
+# Сколько символов промпта/ответа писать в журнал на уровне DEBUG. Целиком
+# не пишем: материалы заявки — десятки тысяч символов на каждый вызов.
+_DEBUG_PREVIEW_CHARS = 3000
+
+
+def _preview(text: str) -> str:
+    if len(text) <= _DEBUG_PREVIEW_CHARS:
+        return text
+    return f"{text[:_DEBUG_PREVIEW_CHARS]}\n… [ещё {len(text) - _DEBUG_PREVIEW_CHARS} симв.]"
+
+
+class LoggedModel(AIModel):
+    """Декоратор модели: пишет в журнал каждый вызов.
+
+    На INFO — номер вызова, размер запроса (и кэшируемой части), время и
+    размер ответа; на DEBUG — начало промпта и ответа. Сбой вызова пишется
+    с временем до сбоя и пробрасывается дальше без изменений.
+
+    Отдельный класс, а не код в каждой модели: провайдеров пять, а по
+    журналу нужно одинаково видеть, сколько вызовов было и сколько они шли.
+    """
+
+    def __init__(self, model: AIModel, provider: str):
+        self._model = model
+        self.provider = provider
+        self.supports_prompt_caching = model.supports_prompt_caching
+        self._calls = 0
+
+    @property
+    def wrapped(self) -> AIModel:
+        return self._model
+
+    def response(self, query: str) -> str:
+        return self._logged(lambda: self._model.response(query), query, cache_prefix="")
+
+    def response_with_cache(self, cache_prefix: str, query: str) -> str:
+        return self._logged(
+            lambda: self._model.response_with_cache(cache_prefix, query),
+            query,
+            cache_prefix=cache_prefix,
+        )
+
+    def _logged(self, call, query: str, cache_prefix: str) -> str:
+        self._calls += 1
+        number = self._calls
+        size = len(cache_prefix) + len(query)
+        cached = f", из них кэшируемая часть {len(cache_prefix)}" if cache_prefix else ""
+        logger.info(
+            "LLM #%d → %s: запрос %d симв. (~%d ток.)%s",
+            number, self.provider, size, TokenEstimator.tokens(cache_prefix + query), cached,
+        )
+        logger.debug("LLM #%d промпт:\n%s", number, _preview(cache_prefix + query))
+
+        started = time.perf_counter()
+        try:
+            text = call()
+        except Exception as exc:
+            logger.error(
+                "LLM #%d ✗ %s: сбой через %.1f с — %s: %s",
+                number, self.provider, time.perf_counter() - started,
+                type(exc).__name__, exc,
+            )
+            raise
+
+        logger.info(
+            "LLM #%d ← %s: ответ %d симв. за %.1f с",
+            number, self.provider, len(text or ""), time.perf_counter() - started,
+        )
+        logger.debug("LLM #%d ответ:\n%s", number, _preview(text or ""))
+        return text
 
 
 # ── Service LLM base (для облачных моделей с retry-логикой) ──────────────────
@@ -65,21 +143,15 @@ class ServiceLLMModel(AIModel, ABC):
             except ValueError as exc:
                 # Empty/invalid response — retry with short timeout
                 if self._is_empty_response(exc) and attempt < self.empty_response_retries:
-                    print(
-                        f"[WARN] {self.__class__.__name__} не вернул текст, "
+                    logger.warning(f"{self.__class__.__name__} не вернул текст, "
                         f"попытка {attempt}/{self.empty_response_retries}, "
-                        f"повтор через {self.empty_response_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.empty_response_delay} сек")
                     time.sleep(self.empty_response_delay)
                     continue
 
                 if self._is_empty_response(exc):
-                    print(
-                        f"[ERROR] {self.__class__.__name__} не вернул валидный текст "
-                        f"после {self.empty_response_retries} попыток",
-                        flush=True,
-                    )
+                    logger.error(f"{self.__class__.__name__} не вернул валидный текст "
+                        f"после {self.empty_response_retries} попыток")
                     return _OVERLOAD_MESSAGE
 
                 # Other ValueError — fail immediately
@@ -87,20 +159,14 @@ class ServiceLLMModel(AIModel, ABC):
 
             except Exception as exc:
                 if self._is_overload(exc) and attempt < self.retries:
-                    print(
-                        f"[WARN] {self.__class__.__name__} перегружен, "
+                    logger.warning(f"{self.__class__.__name__} перегружен, "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек. Ошибка: {exc}",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек. Ошибка: {exc}")
                     time.sleep(self.retry_delay)
                     continue
 
                 if self._is_overload(exc):
-                    print(
-                        f"[ERROR] {self.__class__.__name__} недоступен после {self.retries} попыток",
-                        flush=True,
-                    )
+                    logger.error(f"{self.__class__.__name__} недоступен после {self.retries} попыток")
                     return _OVERLOAD_MESSAGE
 
                 raise RuntimeError(f"Ошибка {self.__class__.__name__}: {exc}") from exc
@@ -165,10 +231,7 @@ class GeminiModel(ServiceLLMModel):
             if result.usage_metadata
             else "?"
         )
-        print(
-            f"[INFO] Gemini finish_reason={finish}, output_tokens={tokens_out}, chars={len(result.text)}",
-            flush=True,
-        )
+        logger.info(f"Gemini finish_reason={finish}, output_tokens={tokens_out}, chars={len(result.text)}")
         return result.text.strip()
 
 
@@ -223,9 +286,26 @@ class AnthropicModel(ServiceLLMModel):
             block.text for block in message.content
             if getattr(block, "type", None) == "text"
         ).strip()
+        self._log_usage(message)
         if not text:
             raise ValueError("Anthropic не вернула текст")
         return text
+
+    @staticmethod
+    def _log_usage(message) -> None:
+        """Токены вызова: по ним видно, срабатывает ли prompt caching."""
+        usage = getattr(message, "usage", None)
+        if usage is None:
+            return
+        logger.info(
+            "Anthropic stop_reason=%s, токены: вход %s, запись в кэш %s, "
+            "чтение из кэша %s, выход %s",
+            getattr(message, "stop_reason", "?"),
+            getattr(usage, "input_tokens", "?"),
+            getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            getattr(usage, "cache_read_input_tokens", 0) or 0,
+            getattr(usage, "output_tokens", "?"),
+        )
 
     def response(self, query: str) -> str:
         return self._retrying_call(query, cache_prefix="")
@@ -251,34 +331,25 @@ class AnthropicModel(ServiceLLMModel):
                             wait = int(float(retry_after)) + 5
                     except Exception:
                         pass
-                    print(
-                        f"[WARN] {self.__class__.__name__} 429 rate limit, "
+                    logger.warning(f"{self.__class__.__name__} 429 rate limit, "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {wait} сек",
-                        flush=True,
-                    )
+                        f"повтор через {wait} сек")
                     time.sleep(wait)
                     continue
                 raise RuntimeError(f"Ошибка Anthropic API: {e}") from e
             except self._sdk.APIStatusError as e:
                 if e.status_code in (500, 503) and attempt < self.retries:
-                    print(
-                        f"[WARN] {self.__class__.__name__} {e.status_code}, "
+                    logger.warning(f"{self.__class__.__name__} {e.status_code}, "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек")
                     time.sleep(self.retry_delay)
                     continue
                 raise RuntimeError(f"Ошибка Anthropic API: {e}") from e
             except ValueError as e:
                 if self._is_empty_response(e) and attempt < self.empty_response_retries:
-                    print(
-                        f"[WARN] {self.__class__.__name__} не вернул текст, "
+                    logger.warning(f"{self.__class__.__name__} не вернул текст, "
                         f"попытка {attempt}/{self.empty_response_retries}, "
-                        f"повтор через {self.empty_response_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.empty_response_delay} сек")
                     time.sleep(self.empty_response_delay)
                     continue
                 raise RuntimeError(f"Ошибка Anthropic API: {e}") from e
@@ -310,48 +381,36 @@ class QwenModel(AIModel):
                 return self._call_api(query)
             except ValueError as exc:
                 if self._is_empty_response(exc) and attempt < self.empty_response_retries:
-                    print(
-                        f"[WARN] Qwen не вернул текст, "
+                    logger.warning(f"Qwen не вернул текст, "
                         f"попытка {attempt}/{self.empty_response_retries}, "
-                        f"повтор через {self.empty_response_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.empty_response_delay} сек")
                     time.sleep(self.empty_response_delay)
                     continue
                 raise RuntimeError(f"Ошибка Qwen API: {exc}") from exc
 
             except httpx.TimeoutException as exc:
                 if attempt < self.retries:
-                    print(
-                        f"[WARN] Qwen таймаут (ReadTimeout), "
+                    logger.warning(f"Qwen таймаут (ReadTimeout), "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек")
                     time.sleep(self.retry_delay)
                     continue
                 raise RuntimeError(f"Ошибка Qwen API: таймаут после {self.retries} попыток") from exc
 
             except httpx.HTTPStatusError as exc:
                 if (exc.response.status_code in (503, 504) and attempt < self.retries):
-                    print(
-                        f"[WARN] Qwen {exc.response.status_code}, "
+                    logger.warning(f"Qwen {exc.response.status_code}, "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек")
                     time.sleep(self.retry_delay)
                     continue
                 raise RuntimeError(f"Ошибка Qwen API: {exc}") from exc
 
             except Exception as exc:
                 if self._is_overload(exc) and attempt < self.retries:
-                    print(
-                        f"[WARN] Qwen перегружен, "
+                    logger.warning(f"Qwen перегружен, "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек. Ошибка: {exc}",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек. Ошибка: {exc}")
                     time.sleep(self.retry_delay)
                     continue
 
@@ -437,48 +496,36 @@ class VskAIModel(AIModel):
                 return self._call_api(query)
             except ValueError as exc:
                 if self._is_empty_response(exc) and attempt < self.empty_response_retries:
-                    print(
-                        f"[WARN] VSK AI не вернул текст, "
+                    logger.warning(f"VSK AI не вернул текст, "
                         f"попытка {attempt}/{self.empty_response_retries}, "
-                        f"повтор через {self.empty_response_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.empty_response_delay} сек")
                     time.sleep(self.empty_response_delay)
                     continue
                 raise RuntimeError(f"Ошибка VSK AI API: {exc}") from exc
 
             except httpx.TimeoutException as exc:
                 if attempt < self.retries:
-                    print(
-                        f"[WARN] VSK AI таймаут (ReadTimeout), "
+                    logger.warning(f"VSK AI таймаут (ReadTimeout), "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек")
                     time.sleep(self.retry_delay)
                     continue
                 raise RuntimeError(f"Ошибка VSK AI API: таймаут после {self.retries} попыток") from exc
 
             except httpx.HTTPStatusError as exc:
                 if (exc.response.status_code in (503, 504) and attempt < self.retries):
-                    print(
-                        f"[WARN] VSK AI {exc.response.status_code}, "
+                    logger.warning(f"VSK AI {exc.response.status_code}, "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек")
                     time.sleep(self.retry_delay)
                     continue
                 raise RuntimeError(f"Ошибка VSK AI API: {exc}") from exc
 
             except Exception as exc:
                 if self._is_overload(exc) and attempt < self.retries:
-                    print(
-                        f"[WARN] VSK AI перегружен, "
+                    logger.warning(f"VSK AI перегружен, "
                         f"попытка {attempt}/{self.retries}, "
-                        f"повтор через {self.retry_delay} сек. Ошибка: {exc}",
-                        flush=True,
-                    )
+                        f"повтор через {self.retry_delay} сек. Ошибка: {exc}")
                     time.sleep(self.retry_delay)
                     continue
 
@@ -585,8 +632,14 @@ class ModelFactory:
 
     @staticmethod
     def create() -> AIModel:
+        """Модель выбранного провайдера, обёрнутая в журналирование вызовов."""
         provider = settings.ai_provider.strip().lower()
+        model = ModelFactory._create(provider)
+        logger.info("Модель: провайдер %s (%s)", provider, type(model).__name__)
+        return LoggedModel(model, provider)
 
+    @staticmethod
+    def _create(provider: str) -> AIModel:
         if provider == "ollama":
             return OllamaModel(
                 base_url=settings.llm_base_url,

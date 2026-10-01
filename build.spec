@@ -33,7 +33,6 @@ icon = str(icon_path) if icon_path.is_file() else None
 hidden_imports = collect_submodules('PySide6') + [
     'edifice',
     'requests',
-    'loguru',
 ]
 
 a = Analysis(

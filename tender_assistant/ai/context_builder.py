@@ -1,5 +1,8 @@
+import logging
 import re
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 
 class TokenEstimator:
@@ -144,19 +147,13 @@ class ContextBuilder:
         )
 
         if budget < self.MIN_BASE_TOKENS:
-            print(
-                "[WARN] Контекста не хватает на нормативную базу — "
-                "она будет опущена",
-                flush=True,
-            )
+            logger.warning("Контекста не хватает на нормативную базу — "
+                "она будет опущена")
             return ""
 
         if TokenEstimator.tokens(full) <= budget:
             return full
 
-        print(
-            f"[INFO] Нормативная база не влезает в контекст, "
-            f"отбираем релевантные разделы (бюджет {budget} токенов)",
-            flush=True,
-        )
+        logger.info(f"Нормативная база не влезает в контекст, "
+            f"отбираем релевантные разделы (бюджет {budget} токенов)")
         return self._index.relevant(source_text, TokenEstimator.chars(budget))

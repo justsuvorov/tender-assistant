@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from tender_assistant.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def md_cell(value) -> str:
@@ -50,10 +53,10 @@ class BaseReport:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(report_text, encoding="utf-8")
         except OSError as exc:
-            print(f"[WARN] Отчёт '{self.title}' не сохранён: {exc}", flush=True)
+            logger.warning(f"Отчёт '{self.title}' не сохранён: {exc}")
             return None
 
-        print(f"[INFO] Отчёт сохранён: {path}", flush=True)
+        logger.info(f"Отчёт сохранён: {path}")
         return str(path)
 
     def _path(self) -> Path:

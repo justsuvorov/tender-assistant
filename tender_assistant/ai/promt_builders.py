@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +9,8 @@ from tender_assistant.ai.context_builder import (
 )
 from tender_assistant.core.config import settings
 from tender_assistant.core.parsers import DataParser
+
+logger = logging.getLogger(__name__)
 
 
 class NormativeBaseLoader:
@@ -26,7 +29,7 @@ class NormativeBaseLoader:
 
         p = Path(path)
         if not p.exists():
-            print(f"[WARN] Путь базы знаний не найден: {path}", flush=True)
+            logger.warning(f"Путь базы знаний не найден: {path}")
             return ""
 
         if p.is_file():
@@ -42,13 +45,13 @@ class NormativeBaseLoader:
             try:
                 return path.read_text(encoding="utf-8").strip()
             except (UnicodeDecodeError, OSError) as exc:
-                print(f"[WARN] Не прочитан файл {path.name}: {exc}", flush=True)
+                logger.warning(f"Не прочитан файл {path.name}: {exc}")
                 return ""
 
         try:
             return DataParser(str(path)).origin_data()
         except Exception as exc:
-            print(f"[WARN] Не разобран файл {path.name}: {exc}", flush=True)
+            logger.warning(f"Не разобран файл {path.name}: {exc}")
             return ""
 
     def _read_directory(self, directory: Path) -> str:
@@ -120,18 +123,12 @@ class PromptEngine:
         )
 
         if budget < ContextBuilder.MIN_BASE_TOKENS:
-            print(
-                f"[WARN] Контекста не хватает на '{fit_key}' — значение опущено",
-                flush=True,
-            )
+            logger.warning(f"Контекста не хватает на '{fit_key}' — значение опущено")
             values[fit_key] = ""
         elif TokenEstimator.tokens(original) > budget:
             index = NormativeIndex(original)
-            print(
-                f"[INFO] '{fit_key}' не влезает в контекст: {index.section_count} "
-                f"разделов, отбираем релевантные (бюджет {budget} токенов)",
-                flush=True,
-            )
+            logger.info(f"'{fit_key}' не влезает в контекст: {index.section_count} "
+                f"разделов, отбираем релевантные (бюджет {budget} токенов)")
             values[fit_key] = index.relevant(
                 fit_query or skeleton, TokenEstimator.chars(budget)
             )

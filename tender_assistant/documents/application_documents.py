@@ -1,3 +1,4 @@
+import logging
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -18,6 +19,8 @@ from tender_assistant.reports.report_export import (
     BaseReport,
     md_cell,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TitleMatcher:
@@ -80,10 +83,7 @@ class DocumentArchive:
         """{имя файла: путь} по всем файлам архива, включая вложенные папки."""
         root = Path(self.documents_path)
         if not root.exists():
-            print(
-                f"[WARN] Папка с документами не найдена: {self.documents_path}",
-                flush=True,
-            )
+            logger.warning(f"Папка с документами не найдена: {self.documents_path}")
             return {}
 
         files = [
@@ -102,7 +102,7 @@ class DocumentArchive:
             for file in files
         }
 
-        print(f"[INFO] В архиве найдено файлов: {len(documents)}", flush=True)
+        logger.info(f"В архиве найдено файлов: {len(documents)}")
         return documents
 
 
@@ -128,7 +128,7 @@ class ComplectFolder:
             shutil.copy2(source, destination)
             return destination
         except OSError as exc:
-            print(f"[WARN] Не скопирован {source}: {exc}", flush=True)
+            logger.warning(f"Не скопирован {source}: {exc}")
             return None
 
     @staticmethod
@@ -172,10 +172,16 @@ class ApplicationDocuments:
         """Ищет в архиве файлы по перечню документов и копирует их в папку заявки."""
         available_documents = self.archive.files()
 
-        rows = [
-            self._prepare_document(document, available_documents)
-            for document in self.documents_list
-        ]
+        rows = []
+        for i, document in enumerate(self.documents_list, start=1):
+            row = self._prepare_document(document, available_documents)
+            logger.info(
+                "[%d/%d] «%s» → %s%s%s",
+                i, len(self.documents_list), row.name, row.status.value,
+                f": {', '.join(row.files)}" if row.files else "",
+                f" ({row.note})" if row.note else "",
+            )
+            rows.append(row)
 
         result = ApplicationDocumentsResult(
             rows=rows, result_folder=str(self.complect.path)
@@ -183,11 +189,8 @@ class ApplicationDocuments:
         result.report_path = self.report.result(self._report_text(result))
 
         found = sum(1 for r in rows if r.status is DocumentStatus.FOUND)
-        print(
-            f"[INFO] Подготовлено {found}/{len(rows)} документов "
-            f"в {result.result_folder}",
-            flush=True,
-        )
+        logger.info(f"Подготовлено {found}/{len(rows)} документов "
+            f"в {result.result_folder}")
         return result
 
     def _prepare_document(

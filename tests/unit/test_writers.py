@@ -526,7 +526,7 @@ class TestDocumentListWriter:
         doc = Document(str(out))
 
         headings = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
-        assert "Перечень документов для участия в закупке" in headings
+        assert "Перечень документов для участия в конкурсе" in headings
 
         source_line = next(p for p in doc.paragraphs if p.text.startswith("Источник"))
         assert "3. Состав заявки участника" in source_line.text

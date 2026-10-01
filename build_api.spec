@@ -20,6 +20,9 @@ console = True  # логи выполнения этапов видны толь
 # __init__ конкретной модели) точно попали в сборку, а не только то, что
 # видно статически из графа импортов main.py.
 hidden_imports = collect_submodules('tender_assistant') + [
+    # pandas подгружает xlrd лениво (только при чтении .xls) — статический
+    # анализ его не видит, без явного импорта .xls в EXE не прочитается.
+    'xlrd',
     'uvicorn.logging',
     'uvicorn.loops',
     'uvicorn.loops.auto',

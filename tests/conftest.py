@@ -6,6 +6,7 @@
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,11 @@ os.environ.setdefault("AI_PROVIDER", "gemini")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("PROMPT_CONTEXT_WINDOW", "0")
+# Журнал тестов — во временную папку, а не в logs/ рабочей копии
+# (main.py настраивает журнал при импорте).
+os.environ.setdefault(
+    "LOG_DIR", str(Path(tempfile.gettempdir()) / "tender_assistant_test_logs")
+)
 
 from docx import Document  # noqa: E402
 from openpyxl import Workbook  # noqa: E402

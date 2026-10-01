@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -30,6 +31,8 @@ from tender_assistant.reports.report_export import (
     md_cell,
 )
 from tender_assistant.reports.writers import ReportWriter, TenderReportWriter
+
+logger = logging.getLogger(__name__)
 
 _WORD_SUFFIXES = {".docx"}
 
@@ -118,7 +121,7 @@ class KnowledgeBaseContext(ApplicationContext):
             return DataParser(self.tender_info_path).origin_data()
         except Exception as exc:
             # Заявку всё равно нужно заполнить тем, что есть в базе знаний.
-            print(f"[WARN] Требования тендера не прочитаны: {exc}", flush=True)
+            logger.warning(f"Требования тендера не прочитаны: {exc}")
             return ""
 
 
@@ -255,7 +258,7 @@ class AITenderForm(TenderForm):
     def prepare(self, template: FormTemplate, context: str) -> List[FilledField]:
         """Заполняет шаблон значениями из базы знаний и требований тендера."""
         fields = self._extract_queries_from_form(template.markdown)
-        print(f"[INFO] В шаблоне заявки найдено полей: {len(fields)}", flush=True)
+        logger.info(f"В шаблоне заявки найдено полей: {len(fields)}")
 
         filled: List[FilledField] = []
         for i, field in enumerate(fields, start=1):
@@ -271,10 +274,7 @@ class AITenderForm(TenderForm):
                     note=answer["note"],
                 )
             )
-            print(
-                f"[INFO] [{i}/{len(fields)}] {field.label} → {answer['status']}",
-                flush=True,
-            )
+            logger.info(f"[{i}/{len(fields)}] {field.label} → {answer['status']}")
 
         return filled
 
@@ -313,7 +313,7 @@ class InlineBlanksForm(TenderForm):
         if not blanks:
             return []
 
-        print(f"[INFO] Инлайн-пропусков в шаблоне найдено: {len(blanks)}", flush=True)
+        logger.info(f"Инлайн-пропусков в шаблоне найдено: {len(blanks)}")
         answers = self.inline_query.result(blanks, context)
 
         fields = []

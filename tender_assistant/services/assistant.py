@@ -1,4 +1,5 @@
-import traceback
+import logging
+import time
 from typing import Callable, List, Optional, TypeVar
 
 from tender_assistant.ai.model import AIModel, ModelFactory
@@ -50,6 +51,15 @@ from tender_assistant.reports.writers import TenderReportWriter
 
 T = TypeVar("T")
 
+logger = logging.getLogger(__name__)
+
+# Названия этапов для журнала — ключи совпадают с AssistantResult.errors.
+_STAGE_TITLES = {
+    "document_list": "Этап 1. Перечень документов",
+    "prepared_documents": "Этап 2. Подготовка документов",
+    "application": "Этап 3. Заполнение заявки",
+}
+
 
 class TenderAssistantService:
     """Собирает и выполняет три этапа подготовки тендерной заявки.
@@ -72,7 +82,9 @@ class TenderAssistantService:
         # Ошибки ввода (нет файла, неподдерживаемый формат) — до первого
         # обращения к модели: такой запрос не должен тратить токены.
         self._validate_inputs()
+        self._log_request()
 
+        started = time.perf_counter()
         result = AssistantResult(request_id=self.request.message_id)
         failures: List[Exception] = []
 
@@ -93,6 +105,8 @@ class TenderAssistantService:
             result.errors["prepared_documents"] = (
                 "Этап пропущен: не получен перечень документов"
             )
+            logger.warning("%s пропущен: не получен перечень документов",
+                           _STAGE_TITLES["prepared_documents"])
 
         application = self._run_stage(
             "application", lambda: self._tender_application().result(), result, failures
@@ -104,9 +118,36 @@ class TenderAssistantService:
         # поднимаем первую ошибку, main.py превратит её в 400/502.
         # Этап 2 без этапа 1 не запускается, поэтому достаточно проверить 1 и 3.
         if document_list is None and application is None:
+            logger.error("Ни один этап не выполнен за %.1f с", time.perf_counter() - started)
             raise failures[0]
 
+        if result.errors:
+            logger.warning(
+                "Обработка завершена частично за %.1f с, не выполнены: %s",
+                time.perf_counter() - started, ", ".join(result.errors),
+            )
+        else:
+            logger.info("Обработка завершена за %.1f с", time.perf_counter() - started)
         return result
+
+    def _log_request(self) -> None:
+        request = self.request
+        logger.info(
+            "Входные данные:\n"
+            "  требования: %s\n"
+            "  шаблон заявки: %s\n"
+            "  архив документов: %s\n"
+            "  нормативная база: %s\n"
+            "  база знаний: %s\n"
+            "  результаты: %s (комплект: %s)",
+            request.file_path,
+            request.application_template_path,
+            request.documents_folder_path,
+            request.normative_base_folder or "не задана",
+            request.knowledge_base_folder or "не задана (используется нормативная)",
+            request.results_path,
+            request.result_folder_name or "-",
+        )
 
     def _validate_inputs(self) -> None:
         """Файлы, без которых этапы 1 и 3 не начнутся: существуют и читаются."""
@@ -125,14 +166,23 @@ class TenderAssistantService:
         Этап 3 не зависит от этапов 1–2: ошибка модели на перечне документов
         не должна отнимать у пользователя заполненную заявку, и наоборот.
         """
+        title = _STAGE_TITLES.get(name, name)
+        logger.info("%s: старт", title)
+        started = time.perf_counter()
         try:
-            return stage()
+            value = stage()
         except Exception as exc:
-            print(f"[ERROR] Этап '{name}' не выполнен: {exc}", flush=True)
-            traceback.print_exc()
+            # exception() — с полным traceback: по одной строке «не выполнен»
+            # причину сбоя глубоко в разборе документа не найти.
+            logger.exception(
+                "%s: не выполнен через %.1f с — %s", title,
+                time.perf_counter() - started, exc,
+            )
             result.errors[name] = str(exc) or type(exc).__name__
             failures.append(exc)
             return None
+        logger.info("%s: завершён за %.1f с", title, time.perf_counter() - started)
+        return value
 
     # ── Этап 1 ────────────────────────────────────────────────────────────────
 

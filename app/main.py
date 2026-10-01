@@ -1,4 +1,4 @@
-"""Настольный интерфейс тендер-ассистента.
+"""Настольный интерфейс конкурсного ассистента.
 
 Собирает пути к исходным материалам, отправляет их в POST /api/update
 и показывает сводку по трём этапам: перечень документов, подготовка файлов,
@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -25,7 +26,6 @@ from edifice import (
     use_async_call,
     use_state,
 )
-from loguru import logger
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication, QFileDialog
 
@@ -62,11 +62,36 @@ _LOGO_PATH = _ASSETS / "vsk_logo.png"
 # ── Логирование ───────────────────────────────────────────────────────────────
 
 _LOG_PATH = APP_DIR / "app.log"
-_LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}"
+# Тот же вид строки, что у журнала сервиса — их удобно читать рядом.
+_LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 
-logger.remove()
-logger.add(_LOG_PATH, format=_LOG_FORMAT, rotation="10 MB")
-logger.add(lambda msg: print(msg, end=""), format=_LOG_FORMAT)
+logger = logging.getLogger("tender_assistant.gui")
+
+
+def _setup_logging() -> None:
+    """app.log рядом с программой (5 файлов по 10 МБ) и консоль, если она есть.
+
+    У собранного оконного EXE консоли нет (sys.stderr is None) — тогда только файл.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    formatter = logging.Formatter(_LOG_FORMAT, "%Y-%m-%d %H:%M:%S")
+
+    handlers = []
+    try:
+        handlers.append(RotatingFileHandler(
+            _LOG_PATH, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        ))
+    except OSError:
+        pass  # нет прав на папку программы — работаем без файла
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler(sys.stderr))
+
+    for handler in handlers:
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
 
 # ── Конфигурация ──────────────────────────────────────────────────────────────
 
@@ -205,7 +230,7 @@ def _short(path: str, placeholder: str) -> str:
 
 
 REQUIRED_INPUTS = (
-    ("requirements_file", "файл требований тендера"),
+    ("requirements_file", "файл требований конкурса"),
     ("archive_folder", "папку с документами"),
     ("template_file", "шаблон заявки"),
     ("results_folder", "папку для результатов"),
@@ -215,6 +240,24 @@ REQUIRED_INPUTS = (
 def missing_inputs(**inputs) -> list:
     """Незаполненные обязательные поля — человекочитаемыми названиями."""
     return [name for key, name in REQUIRED_INPUTS if not inputs.get(key)]
+
+
+def _result_summary(data: dict) -> str:
+    """Итоги трёх этапов одной строкой — для журнала."""
+    documents = (data.get("document_list") or {}).get("documents") or []
+    rows = (data.get("prepared_documents") or {}).get("rows") or []
+    fields = (data.get("application") or {}).get("fields") or []
+
+    def count(items, status):
+        return sum(1 for item in items if item.get("status") == status)
+
+    return (
+        f"Перечень: {len(documents)} док.; "
+        f"комплект: есть {count(rows, 'Есть')}, проверить {count(rows, 'Проверить')}, "
+        f"нет {count(rows, 'Нет')}; "
+        f"заявка: найдено {count(fields, 'found')}, проверить {count(fields, 'check')}, "
+        f"нет {count(fields, 'missing')}"
+    )
 
 
 def build_payload(
@@ -302,39 +345,45 @@ def TenderAssistantApp(self):
         set_status("Готов к работе")
 
     def pick_requirements(_=None):
-        path = _pick_file("Требования тендера", TENDERS_DIR)
+        path = _pick_file("Требования конкурса", TENDERS_DIR)
         if path:
             set_requirements_file(path)
+            logger.info(f"Выбрано — Требования конкурса: {path}")
             _reset_result()
 
     def pick_archive(_=None):
         path = _pick_directory("Папка с документами организации", DOCUMENTS_DIR)
         if path:
             set_archive_folder(path)
+            logger.info(f"Выбрано — Папка с документами организации: {path}")
             _reset_result()
 
     def pick_template(_=None):
         path = _pick_file("Шаблон заявки", TENDERS_DIR)
         if path:
             set_template_file(path)
+            logger.info(f"Выбрано — Шаблон заявки: {path}")
             _reset_result()
 
     def pick_normative(_=None):
         path = _pick_directory("Нормативная база", NORMATIVE_DIR)
         if path:
             set_normative_folder(path)
+            logger.info(f"Выбрано — Нормативная база: {path}")
             _reset_result()
 
     def pick_knowledge(_=None):
         path = _pick_directory("База знаний и эталонные заявки", KNOWLEDGE_DIR)
         if path:
             set_knowledge_folder(path)
+            logger.info(f"Выбрано — База знаний и эталонные заявки: {path}")
             _reset_result()
 
     def pick_results(_=None):
         path = _pick_directory("Папка для результатов", RESULTS_DIR)
         if path:
             set_results_folder(path)
+            logger.info(f"Выбрано — Папка для результатов: {path}")
             _reset_result()
 
     # ── Запуск обработки ──────────────────────────────────────────────────
@@ -356,6 +405,7 @@ def TenderAssistantApp(self):
         missing = _missing_inputs()
         if missing:
             set_status("Укажите: " + ", ".join(missing))
+            logger.warning(f"Запуск без обязательных полей: {', '.join(missing)}")
             return
 
         set_processing(True)
@@ -375,38 +425,46 @@ def TenderAssistantApp(self):
         try:
             Path(results_folder).mkdir(parents=True, exist_ok=True)
             payload = build_payload(**_inputs())
-            logger.info(f"Запрос: {payload}")
+            logger.info(
+                f"Запрос #{payload['message_id']} → {API_URL}:\n"
+                + json.dumps(payload, ensure_ascii=False, indent=2)
+            )
 
             response = await asyncio.to_thread(
                 requests.post, API_URL, json=payload, timeout=REQUEST_TIMEOUT
             )
 
+            elapsed_text = _fmt_long(time.time() - started)
             if response.ok:
                 data = response.json()
                 set_result(data)
-                elapsed_text = _fmt_long(time.time() - started)
+                logger.info(f"Ответ 200 за {elapsed_text}. {_result_summary(data)}")
                 errors = data.get("errors") or {}
                 if errors:
                     set_status(f"Выполнено частично за {elapsed_text} — "
                                f"см. ошибки этапов ниже")
-                    logger.warning(f"Этапы с ошибками: {errors}")
+                    for stage, error in errors.items():
+                        logger.warning(f"Этап {stage} не выполнен: {error}")
                 else:
                     set_status(f"Готово за {elapsed_text}")
-                    logger.info("Обработка завершена успешно")
             else:
                 message = _error_detail(response)
                 set_status(f"Ошибка {response.status_code}: {message}")
-                logger.error(f"Ошибка API {response.status_code}: {message}")
+                logger.error(
+                    f"Ответ {response.status_code} за {elapsed_text}: {message}"
+                )
 
-        except requests.ConnectionError:
+        except requests.ConnectionError as exc:
             set_status(
-                f"Сервис недоступен: {API_URL}. Запустите его командой "
-                f"«uvicorn main:app»"
+                f"Сервис недоступен: {API_URL}. Запустите "
+                f"«Tender Assistant API.exe» и повторите"
             )
-            logger.error("Не удалось подключиться к API")
+            logger.error(f"Не удалось подключиться к сервису {API_URL}: {exc}")
         except requests.Timeout:
             set_status("Превышено время ожидания ответа сервиса")
-            logger.error("Таймаут запроса к API")
+            logger.error(
+                f"Сервис не ответил за {REQUEST_TIMEOUT} с (request_timeout в config.json)"
+            )
         except Exception as exc:
             set_status(f"Ошибка: {str(exc)[:200]}")
             logger.exception("Непредвиденная ошибка")
@@ -424,7 +482,7 @@ def TenderAssistantApp(self):
 
     ready = not _missing_inputs()
 
-    with Window(title="Тендер-ассистент",
+    with Window(title="Конкурсный ассистент",
                 style={"background-color": _BG,
                        "min-width": "760px", "min-height": "640px"}):
         with VScrollView(style={"background-color": _BG, "padding": "20px"}):
@@ -434,7 +492,7 @@ def TenderAssistantApp(self):
                     edifice.Image(src=str(_LOGO_PATH),
                                   style={"width": "44px", "height": "44px",
                                          "margin-right": "12px"})
-                Label(text="Тендер-ассистент",
+                Label(text="Конкурсный ассистент",
                       style={"color": _WHITE, "font-size": "20px",
                              "font-weight": "bold"})
 
@@ -444,7 +502,7 @@ def TenderAssistantApp(self):
                   style={**label_s(), "font-size": "11px",
                          "font-weight": "bold", "margin-bottom": "8px"})
 
-            _picker_row("Требования тендера", requirements_file, "Не выбраны",
+            _picker_row("Требования конкурса", requirements_file, "Не выбраны",
                         pick_requirements,
                         "Документ, из которого берётся перечень документов")
             _picker_row("Папка с документами организации", archive_folder,
@@ -610,7 +668,8 @@ def _apply_theme(qapp) -> None:
 
 
 if __name__ == "__main__":
-    logger.info(f"Запуск интерфейса, API: {API_URL}")
+    _setup_logging()
+    logger.info(f"Запуск интерфейса, API: {API_URL}, журнал: {_LOG_PATH}")
 
     app = edifice.App(TenderAssistantApp())
     _apply_theme(QApplication.instance())

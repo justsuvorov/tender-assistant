@@ -23,3 +23,6 @@ __pycache__/
 *.py[cod]
 *.log
 ~$*
+
+# Журнал сервиса (LOG_DIR)
+logs/

@@ -120,7 +120,7 @@ class TestFullPipeline:
             p.text for p in ReadDocx(str(formatted)).paragraphs
             if p.style.name.startswith("Heading")
         ]
-        assert "Перечень документов для участия в закупке" in headings
+        assert "Перечень документов для участия в конкурсе" in headings
 
     def test_source_documents_are_not_modified(
         self, api_request, scripted_model, requirements_docx, template_docx

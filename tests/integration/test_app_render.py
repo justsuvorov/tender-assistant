@@ -99,7 +99,7 @@ def test_renders_without_errors(rendered):
 
 
 @pytest.mark.parametrize("caption", [
-    "Требования тендера",
+    "Требования конкурса",
     "Папка с документами организации",
     "Шаблон заявки",
     "Нормативная база",

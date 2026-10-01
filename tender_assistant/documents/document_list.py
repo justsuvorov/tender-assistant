@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,8 @@ from tender_assistant.core.parsers import DataParser, MarkdownOutline, Section
 from tender_assistant.core.pydantic_models import DocumentListResult, RequiredDocument
 from tender_assistant.reports.report_export import BaseReport, DocumentListReport, md_cell
 from tender_assistant.reports.writers import DocumentListWriter, ReportWriter
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentSections:
@@ -53,10 +56,7 @@ class DocumentSections:
         """
         section: Optional[Section] = self.outline.find(header_name)
         if section is None:
-            print(
-                f"[WARN] Раздел '{header_name}' не найден — читаем документ целиком",
-                flush=True,
-            )
+            logger.warning(f"Раздел '{header_name}' не найден — читаем документ целиком")
             return self.markdown
         return section.text
 
@@ -87,7 +87,7 @@ class SectionsMatcher:
         )
         model_response = self.ai_model.response(query_for_model)
         headers = self.response_post_processor.report(model_response)
-        print(f"[INFO] Найдены разделы со списком документов: {headers}", flush=True)
+        logger.info(f"Найдены разделы со списком документов: {headers}")
         return headers
 
 
@@ -150,10 +150,7 @@ class NormativeChecker:
             return {"documents": [], "excluded": []}
 
         if not self.base_text.strip():
-            print(
-                "[INFO] Нормативная база не задана — перечень принят без фильтрации",
-                flush=True,
-            )
+            logger.info("Нормативная база не задана — перечень принят без фильтрации")
             return {"documents": documents, "excluded": []}
 
         listing = "\n".join(
@@ -174,13 +171,15 @@ class NormativeChecker:
         # Модель могла отбросить всё — это почти всегда её ошибка,
         # исходный перечень надёжнее пустого.
         if not checked.get("documents"):
-            print(
-                "[WARN] Проверка по нормативной базе не оставила документов — "
-                "используем исходный перечень",
-                flush=True,
-            )
+            logger.warning("Проверка по нормативной базе не оставила документов — "
+                "используем исходный перечень")
             return {"documents": documents, "excluded": []}
 
+        for document in checked.get("excluded", []):
+            logger.info(
+                "Исключён по нормативной базе: «%s» — %s",
+                document.get("name", "?"), document.get("note") or "причина не указана",
+            )
         return checked
 
 
@@ -218,7 +217,7 @@ class DocumentListExtractor:
 
     def _find_headers(self) -> List[str]:
         if not self.document_sections.has_headings():
-            print("[INFO] Заголовки не найдены — документ читается целиком", flush=True)
+            logger.info("Заголовки не найдены — документ читается целиком")
             return []
         return self.sections_matcher.result(self.document_sections.sections_list())
 
@@ -231,18 +230,17 @@ class DocumentListExtractor:
 
         for header in headers:
             section_text = self.document_sections.section_text(header)
-            for document in self.context_matcher.result(section_text):
+            found = self.context_matcher.result(section_text)
+            logger.info("Раздел «%s»: документов в перечне — %d", header, len(found))
+            for document in found:
                 key = document["name"].strip().lower()
                 if key not in seen:
                     seen.add(key)
                     collected.append(document)
 
         if not collected:
-            print(
-                "[WARN] В найденных разделах нет перечня документов — "
-                "разбираем документ целиком",
-                flush=True,
-            )
+            logger.warning("В найденных разделах нет перечня документов — "
+                "разбираем документ целиком")
             return self.context_matcher.result(self.document_sections.markdown)
 
         return collected
@@ -293,11 +291,8 @@ class DocumentList:
 
         result.report_path = self.report.result(self._report_text(result))
         result.formatted_path = str(self.output.save(result))
-        print(
-            f"[INFO] Итоговый перечень документов: {len(result.documents)} шт. "
-            f"(отброшено {len(result.excluded)})",
-            flush=True,
-        )
+        logger.info(f"Итоговый перечень документов: {len(result.documents)} шт. "
+            f"(отброшено {len(result.excluded)})")
         return result
 
     def _check_by_normative(self, documents: List[dict]) -> dict:

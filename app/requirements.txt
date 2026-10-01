@@ -2,4 +2,3 @@
 pyedifice
 PySide6
 requests
-loguru

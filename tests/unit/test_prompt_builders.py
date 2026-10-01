@@ -59,12 +59,13 @@ class TestNormativeBaseLoader:
 
         assert loader.load(str(tmp_path)) == "### Источник: правило.md\n\nВзять"
 
-    def test_legacy_doc_is_reported_not_silently_skipped(self, loader, tmp_path, capsys):
+    def test_legacy_doc_is_reported_not_silently_skipped(self, loader, tmp_path, caplog):
         (tmp_path / "старая заявка.doc").write_bytes(b"\xd0\xcf\x11\xe0")
         (tmp_path / "правило.md").write_text("Взять", encoding="utf-8")
 
         assert loader.load(str(tmp_path)) == "### Источник: правило.md\n\nВзять"
-        assert "старая заявка.doc" in capsys.readouterr().out
+        assert any("старая заявка.doc" in r.getMessage() and r.levelname == "WARNING"
+                   for r in caplog.records)
 
     def test_broken_file_does_not_break_the_load(self, loader, tmp_path):
         """Один битый файл не должен ронять чтение всей базы знаний."""
