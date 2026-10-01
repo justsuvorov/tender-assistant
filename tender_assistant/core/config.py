@@ -1,6 +1,6 @@
-from typing import Optional
+from typing import ClassVar, Optional
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -295,6 +295,37 @@ class Settings(BaseSettings):
 Верни запись по КАЖДОЙ метке, перечисленной выше, даже если значение не
 найдено (тогда status "missing", value "").
 """
+
+    # ------------------------------------------------------------------
+    # Промпты из .env
+    # ------------------------------------------------------------------
+
+    # Тексты выше — значения по умолчанию. Любой из них переопределяется в
+    # .env переменной с тем же именем в верхнем регистре (AI_ROLE,
+    # DOCUMENT_LIST_SEARCHER_TEMPLATE, ...), одной строкой: переносы
+    # записываются как \n — так же, как в document-assistant.
+    PROMPT_FIELDS: ClassVar[tuple] = (
+        "ai_role",
+        "document_list_header_searcher_template",
+        "document_list_searcher_template",
+        "document_list_normative_filter_template",
+        "document_name_matcher",
+        "tender_form_fields_template",
+        "tender_form_fill_context_template",
+        "tender_form_fill_field_template",
+        "tender_form_inline_blanks_template",
+    )
+
+    @field_validator(*PROMPT_FIELDS, mode="before")
+    @classmethod
+    def _prompt_from_env(cls, value, info: ValidationInfo):
+        if not isinstance(value, str):
+            return value
+        # Пустое значение — промпт по умолчанию, а не пустой промпт:
+        # docker-compose передаёт незаданную переменную как пустую строку.
+        if not value.strip():
+            return cls.model_fields[info.field_name].default
+        return value.replace("\\n", "\n")
 
 
 settings = Settings()
