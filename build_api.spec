@@ -15,10 +15,7 @@ from PyInstaller.utils.hooks import collect_submodules
 console = True  # логи выполнения этапов видны только в консоли
 
 # tender_assistant — локальный пакет, не хук pip-пакета: явно просим забрать
-# все подмодули, чтобы лениво импортируемые внутри провайдеры LLM
-# (ai/model.py: import anthropic / from google import genai — только внутри
-# __init__ конкретной модели) точно попали в сборку, а не только то, что
-# видно статически из графа импортов main.py.
+# все подмодули, а не только то, что видно статически из графа импортов main.py.
 hidden_imports = collect_submodules('tender_assistant') + [
     # pandas подгружает xlrd лениво (только при чтении .xls) — статический
     # анализ его не видит, без явного импорта .xls в EXE не прочитается.
@@ -33,8 +30,6 @@ hidden_imports = collect_submodules('tender_assistant') + [
     'uvicorn.protocols.websockets.auto',
     'uvicorn.lifespan',
     'uvicorn.lifespan.on',
-    'google.genai',
-    'anthropic',
 ]
 
 a = Analysis(

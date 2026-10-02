@@ -50,7 +50,7 @@ class TestTenderAIQueryPromptCaching:
     """Регрессия: живой прогон на ~200К-символьном документе тендера показал
     ~82К токенов контекста на КАЖДЫЙ из 47 запросов по полям заявки — материалы
     отправлялись целиком заново на каждое поле, не переиспользуясь. Провайдеры
-    с prompt caching (Anthropic) должны получать материалы отдельным,
+    с prompt caching должны получать материалы отдельным,
     неизменным между полями кэшируемым блоком."""
 
     def test_caching_model_receives_materials_as_a_stable_prefix(self):
@@ -68,7 +68,7 @@ class TestTenderAIQueryPromptCaching:
 
     def test_materials_are_identical_across_fields(self):
         """Смысл кэширования: один и тот же префикс на разные поля одной
-        заявки — иначе Anthropic не сможет переиспользовать кэш."""
+        заявки — иначе провайдер не сможет переиспользовать кэш."""
         model = CachingScriptedModel({Marker.FIELD_VALUE: as_json(
             {"value": "X", "status": "found", "source": "", "note": ""}
         )})

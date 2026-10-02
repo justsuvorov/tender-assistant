@@ -7,6 +7,4 @@ python-docx
 openpyxl
 pandas
 pdfplumber
-google-genai
-anthropic
 xlrd

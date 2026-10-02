@@ -10,26 +10,16 @@ class Settings(BaseSettings):
     database_url: Optional[str] = Field(None, alias="DATABASE_URL")
 
     # --- AI PROVIDER ---
-    ai_provider: str = Field("gemini", alias="AI_PROVIDER")
+    # Только модели на своих серверах: vsk | qwen
+    ai_provider: str = Field("vsk", alias="AI_PROVIDER")
     ai_temperature: float = Field(0.2, alias="AI_TEMPERATURE")
-
-    # Gemini
-    gemini_api_key: Optional[SecretStr] = Field(None, alias="GEMINI_API_KEY")
-    model_name: str = Field("gemini-2.0-flash", alias="AI_MODEL_NAME")
-
-    # Anthropic
-    anthropic_api_key: Optional[SecretStr] = Field(None, alias="ANTHROPIC_API_KEY")
-    anthropic_model_name: str = Field("claude-sonnet-5", alias="ANTHROPIC_MODEL_NAME")
-
-    # Ollama
-    llm_base_url: str = Field("http://localhost:11434", alias="LLM_BASE_URL")
-    llm_model_name: str = Field("qwen2.5:14b", alias="LLM_MODEL_NAME")
-    llm_num_ctx: int = Field(32768, alias="LLM_NUM_CTX")
 
     # Qwen (OpenAI-compatible /v1/completions)
     qwen_api_url: str = Field("http://localhost:8000/v1/completions", alias="QWEN_API_URL")
     qwen_model_name: str = Field("qwen", alias="QWEN_MODEL_NAME")
     qwen_max_tokens: int = Field(8192, alias="QWEN_MAX_TOKENS")
+    # Окно модели: под него урезается база знаний в промпте. 0 — не резать.
+    qwen_num_ctx: int = Field(32768, alias="QWEN_NUM_CTX")
 
     # VSK AI (OpenAI-compatible /v1/chat/completions)
     vsk_api_url: str = Field("http://localhost:8000/v1/chat/completions", alias="VSK_API_URL")
@@ -37,6 +27,8 @@ class Settings(BaseSettings):
     vsk_model_name: str = Field("vsk", alias="VSK_MODEL_NAME")
     vsk_max_tokens: int = Field(100000, alias="VSK_MAX_TOKENS")
     vsk_thinking_token_budget: int = Field(1000, alias="VSK_THINKING_TOKEN_BUDGET")
+    # 0 — не резать: окно VSK велико, база знаний помещается целиком.
+    vsk_num_ctx: int = Field(0, alias="VSK_NUM_CTX")
 
     # --- ПУТИ ПО УМОЛЧАНИЮ ---
     results_root: str = Field("results", alias="RESULTS_ROOT")
@@ -57,17 +49,16 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Провайдеры, которые крутятся на своём железе: у них окно задаём мы сами,
-    # у облачных оно велико и промпт резать не нужно.
-    _SELF_HOSTED = ("ollama", "qwen")
-
     @property
     def context_window(self) -> int:
         """Окно, под которое подгоняется промпт. 0 — не ограничивать."""
         if self.prompt_context_window > 0:
             return self.prompt_context_window
-        if self.ai_provider.strip().lower() in self._SELF_HOSTED:
-            return self.llm_num_ctx
+        provider = self.ai_provider.strip().lower()
+        if provider == "qwen":
+            return self.qwen_num_ctx
+        if provider == "vsk":
+            return self.vsk_num_ctx
         return 0
 
     # ------------------------------------------------------------------

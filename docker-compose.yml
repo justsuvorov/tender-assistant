@@ -17,7 +17,7 @@ services:
       - ./results:/app/results                    # перечень, комплект, заполненная заявка
       - ./logs:/app/logs                          # журнал сервиса (tender_assistant.log)
     environment:
-      # Провайдер: gemini | anthropic | ollama | qwen | vsk
+      # Провайдер (модели на своих серверах): vsk | qwen
       - AI_PROVIDER=${AI_PROVIDER:-vsk}
       - AI_TEMPERATURE=${AI_TEMPERATURE:-0.2}
 
@@ -25,7 +25,7 @@ services:
       - RESULTS_ROOT=${RESULTS_ROOT:-/app/results}
 
       # Ограничение окна при сборке промпта: 0 — по провайдеру
-      # (self-hosted берут LLM_NUM_CTX, облачные промпт не режут)
+      # (QWEN_NUM_CTX или VSK_NUM_CTX)
       - PROMPT_CONTEXT_WINDOW=${PROMPT_CONTEXT_WINDOW:-0}
 
       # Журнал: INFO | DEBUG (DEBUG пишет и начало промптов — с данными документов)
@@ -38,22 +38,13 @@ services:
       - VSK_MODEL_NAME=${VSK_MODEL_NAME:-Qwen3.6-35B-A3B-NVFP4}
       - VSK_MAX_TOKENS=${VSK_MAX_TOKENS:-100000}
       - VSK_THINKING_TOKEN_BUDGET=${VSK_THINKING_TOKEN_BUDGET:-1000}
+      - VSK_NUM_CTX=${VSK_NUM_CTX:-0}
 
       # Qwen (OpenAI-совместимый /v1/completions)
       - QWEN_API_URL=${QWEN_API_URL:-}
       - QWEN_MODEL_NAME=${QWEN_MODEL_NAME:-Qwen3.6-35B-A3B-NVFP4}
       - QWEN_MAX_TOKENS=${QWEN_MAX_TOKENS:-100000}
-
-      # Ollama (локально или на GPU-сервере)
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://localhost:11434}
-      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-qwen2.5:14b}
-      - LLM_NUM_CTX=${LLM_NUM_CTX:-32768}
-
-      # Облачные провайдеры — ключи только из .env, без значений по умолчанию
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - AI_MODEL_NAME=${AI_MODEL_NAME:-gemini-2.0-flash}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - ANTHROPIC_MODEL_NAME=${ANTHROPIC_MODEL_NAME:-claude-sonnet-5}
+      - QWEN_NUM_CTX=${QWEN_NUM_CTX:-32768}
 
       # Промпты — из .env (блок «ПРОМПТЫ»). Не заданы — берутся из
       # core/config.py: пустое значение настройки подменяют на промпт по умолчанию.

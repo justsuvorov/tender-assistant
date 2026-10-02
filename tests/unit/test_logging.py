@@ -90,17 +90,17 @@ class TestSetupLogging:
 
 class TestLoggedModel:
     def test_passes_the_answer_through_and_logs_the_call(self, caplog):
-        model = LoggedModel(BrokenModel("ответ"), "anthropic")
+        model = LoggedModel(BrokenModel("ответ"), "vsk")
 
         with caplog.at_level(logging.INFO, logger="tender_assistant.ai.model"):
             assert model.response("вопрос") == "ответ"
 
         messages = [r.getMessage() for r in caplog.records]
-        assert any(m.startswith("LLM #1 → anthropic: запрос 6 симв.") for m in messages)
-        assert any(m.startswith("LLM #1 ← anthropic: ответ 5 симв.") for m in messages)
+        assert any(m.startswith("LLM #1 → vsk: запрос 6 симв.") for m in messages)
+        assert any(m.startswith("LLM #1 ← vsk: ответ 5 симв.") for m in messages)
 
     def test_cacheable_part_is_reported(self, caplog):
-        model = LoggedModel(BrokenModel("ок"), "anthropic")
+        model = LoggedModel(BrokenModel("ок"), "vsk")
 
         with caplog.at_level(logging.INFO, logger="tender_assistant.ai.model"):
             model.response_with_cache("материалы", "поле")
@@ -120,7 +120,7 @@ class TestLoggedModel:
         assert "LLM #1 ✗ vsk" in caplog.text and "сервис недоступен" in caplog.text
 
     def test_prompt_text_is_only_logged_at_debug(self, caplog):
-        model = LoggedModel(BrokenModel("ок"), "gemini")
+        model = LoggedModel(BrokenModel("ок"), "qwen")
 
         with caplog.at_level(logging.INFO, logger="tender_assistant.ai.model"):
             model.response("ИНН 7701234567")
@@ -132,7 +132,7 @@ class TestLoggedModel:
         assert "7701234567" in caplog.text
 
     def test_calls_are_numbered(self, caplog):
-        model = LoggedModel(BrokenModel("ок"), "gemini")
+        model = LoggedModel(BrokenModel("ок"), "qwen")
         with caplog.at_level(logging.INFO, logger="tender_assistant.ai.model"):
             model.response("1")
             model.response("2")
@@ -143,18 +143,18 @@ class TestLoggedModel:
         class Caching(BrokenModel):
             supports_prompt_caching = True
 
-        assert LoggedModel(Caching(), "anthropic").supports_prompt_caching is True
+        assert LoggedModel(Caching(), "vsk").supports_prompt_caching is True
         assert LoggedModel(BrokenModel(), "qwen").supports_prompt_caching is False
 
     def test_factory_wraps_the_provider_model(self, monkeypatch):
         from tender_assistant.ai import model as model_module
 
-        monkeypatch.setattr(model_module.settings, "ai_provider", "anthropic")
+        monkeypatch.setattr(model_module.settings, "ai_provider", "vsk")
         created = ModelFactory.create()
 
         assert isinstance(created, LoggedModel)
-        assert type(created.wrapped).__name__ == "AnthropicModel"
-        assert created.provider == "anthropic"
+        assert type(created.wrapped).__name__ == "VskAIModel"
+        assert created.provider == "vsk"
 
 
 class TestConsole:

@@ -72,7 +72,7 @@ class TestUpdateErrors:
         """Сбой провайдера LLM — это ошибка шлюза, а не запроса клиента."""
         class DeadModel:
             def response(self, query):
-                raise RuntimeError("Ошибка Anthropic API: сервис недоступен")
+                raise RuntimeError("Ошибка VSK AI API: сервис недоступен")
 
         monkeypatch.setattr(ModelFactory, "create", staticmethod(DeadModel))
         response = client.post("/api/update", json=payload)
@@ -87,7 +87,7 @@ class TestPartialFailure:
         from tests.fakes import Marker, ScriptedModel, as_json
 
         def broken_headers(query):
-            raise RuntimeError("Ошибка Anthropic API: перегружен")
+            raise RuntimeError("Ошибка VSK AI API: перегружен")
 
         model = ScriptedModel({
             Marker.HEADERS: broken_headers,

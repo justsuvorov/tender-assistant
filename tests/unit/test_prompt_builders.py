@@ -216,19 +216,21 @@ class TestPromptEngine:
         )
 
     def test_window_follows_provider(self, monkeypatch):
-        """Облачным моделям промпт не режется, self-hosted — режется."""
+        """У каждого провайдера своё окно: VSK по умолчанию не режет промпт."""
         from tender_assistant.core.config import settings
 
-        monkeypatch.setattr(settings, "ai_provider", "gemini")
+        monkeypatch.setattr(settings, "prompt_context_window", 0)
+        monkeypatch.setattr(settings, "ai_provider", "vsk")
+        monkeypatch.setattr(settings, "vsk_num_ctx", 0)
         assert PromptEngine()._num_ctx == 0
 
-        monkeypatch.setattr(settings, "ai_provider", "ollama")
-        monkeypatch.setattr(settings, "llm_num_ctx", 8192)
+        monkeypatch.setattr(settings, "ai_provider", "qwen")
+        monkeypatch.setattr(settings, "qwen_num_ctx", 8192)
         assert PromptEngine()._num_ctx == 8192
 
     def test_explicit_window_wins_over_provider(self, monkeypatch):
         from tender_assistant.core.config import settings
 
-        monkeypatch.setattr(settings, "ai_provider", "ollama")
+        monkeypatch.setattr(settings, "ai_provider", "qwen")
         monkeypatch.setattr(settings, "prompt_context_window", 1234)
         assert PromptEngine()._num_ctx == 1234

@@ -396,7 +396,7 @@
 
         <div class="note warn">
           <span class="note-label">Ключ провайдера обязателен</span>
-          <p>В <code>.env</code> — <code>AI_PROVIDER</code> и ключ к нему: <code>GEMINI_API_KEY</code> для <code>gemini</code>, <code>ANTHROPIC_API_KEY</code> для <code>anthropic</code>. Без ключа первый же запрос вернёт ошибку от провайдера.</p>
+          <p>В <code>.env</code> — <code>AI_PROVIDER=vsk</code>, адрес <code>VSK_API_URL</code> и ключ <code>VSK_API_KEY</code>. Без ключа первый же запрос вернёт ошибку от провайдера.</p>
         </div>
 
         <h3>Порядок запуска</h3>
@@ -546,15 +546,12 @@
       <section id="provider">
         <h2><span class="num">6.</span> Провайдер модели</h2>
         <p>Задаётся в <code>.env</code> одной переменной:</p>
-<pre><code><span class="c-key">AI_PROVIDER</span>=gemini   <span class="c-note"># gemini | anthropic | ollama | qwen | vsk</span></code></pre>
+<pre><code><span class="c-key">AI_PROVIDER</span>=vsk   <span class="c-note"># vsk | qwen — модели на своих серверах</span></code></pre>
 
         <div class="scroll-x">
           <table>
             <thead><tr><th>Провайдер</th><th>Тип</th><th>Ключевые переменные</th></tr></thead>
             <tbody>
-              <tr><td><code>gemini</code></td><td>облачный</td><td><code>GEMINI_API_KEY</code>, <code>AI_MODEL_NAME</code></td></tr>
-              <tr><td><code>anthropic</code></td><td>облачный</td><td><code>ANTHROPIC_API_KEY</code>, <code>ANTHROPIC_MODEL_NAME</code></td></tr>
-              <tr><td><code>ollama</code></td><td>своё железо</td><td><code>LLM_BASE_URL</code>, <code>LLM_MODEL_NAME</code>, <code>LLM_NUM_CTX</code></td></tr>
               <tr><td><code>qwen</code></td><td>своё железо</td><td><code>QWEN_API_URL</code>, <code>QWEN_MODEL_NAME</code></td></tr>
               <tr><td><code>vsk</code></td><td>своё железо</td><td><code>VSK_API_URL</code>, <code>VSK_API_KEY</code>, <code>VSK_MODEL_NAME</code></td></tr>
             </tbody>
@@ -580,7 +577,7 @@
           <p>Материалы (база знаний + требования тендера) отправляются на <strong>каждый</strong> запрос заполнения — на объёмном документе это ощутимый объём токенов, помноженный на число полей. Один тестовый прогон на форме с 47 полями и документом на 200 000 символов дал 3,89 млн входных токенов без кэша.</p>
         </div>
 
-        <p>При <code>AI_PROVIDER=anthropic</code> материалы уходят отдельным кэшируемым блоком: первый вызов — по полной цене, следующие в течение ~5 минут — по цене чтения кэша. На том же прогоне это снизило объём до 464 тыс. эффективных токенов — разница примерно в <strong>8,4 раза</strong>. У остальных провайдеров кэш не используется — конкатенация как есть.</p>
+        <p>У <code>vsk</code> и <code>qwen</code> отдельного кэшируемого блока в API нет: материалы склеиваются с запросом. Если у провайдера ограничено окно (<code>QWEN_NUM_CTX</code>, <code>VSK_NUM_CTX</code>), материалы урезаются под конкретное поле.</p>
 
         <p>Пропуски внутри пунктов (раздел 3) всегда уходят <strong>одним пакетным запросом</strong> на всю форму — независимо от провайдера и числа пропусков.</p>
 
@@ -589,7 +586,6 @@
           <table>
             <thead><tr><th>Провайдер</th><th class="num">Попыток</th><th class="num">Пауза</th><th>Таймаут ответа</th></tr></thead>
             <tbody>
-              <tr><td>Gemini / Anthropic</td><td class="num">3</td><td class="num">5 сек</td><td>по умолчанию SDK</td></tr>
               <tr><td>Qwen</td><td class="num">3</td><td class="num">5 сек</td><td>600 сек</td></tr>
               <tr><td>VSK AI</td><td class="num">5</td><td class="num">5 сек</td><td>60 сек</td></tr>
             </tbody>

@@ -66,7 +66,7 @@ class ScriptedModel(AIModel):
 
 
 class CachingScriptedModel(ScriptedModel):
-    """ScriptedModel с поддержкой prompt caching — как AnthropicModel.
+    """ScriptedModel с отдельным кэшируемым блоком промпта (supports_prompt_caching).
 
     Подбор ответа работает так же, как у ScriptedModel (маркер ищется по
     склеенным cache_prefix + query), но пары запоминаются отдельно — тесты

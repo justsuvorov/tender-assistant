@@ -25,7 +25,7 @@ _BACKUP_COUNT = 10
 
 # Библиотеки, которые на INFO пишут строку на каждый HTTP-запрос к модели.
 # Наш LoggedModel уже пишет по строке на вызов — их INFO только дублирует.
-_NOISY_LOGGERS = ("httpx", "httpcore", "anthropic", "google_genai", "urllib3")
+_NOISY_LOGGERS = ("httpx", "httpcore", "urllib3")
 
 _request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "request_id", default="-"
