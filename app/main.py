@@ -20,6 +20,7 @@ from edifice import (
     HBoxView,
     Label,
     ProgressBar,
+    TextInput,
     VBoxView,
     VScrollView,
     Window,
@@ -131,6 +132,8 @@ _DIM = "#4a5560"
 _GREEN = "#1a7a4a"
 _YELLOW = "#c47a1e"
 _RED = "#a83a3a"
+_ERROR_TEXT = "#ff8f87"  # _RED на тёмном фоне не читается как текст
+_INPUT_BG = "#06263a"
 
 
 def card():
@@ -179,6 +182,19 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 # ── Диалоги выбора ────────────────────────────────────────────────────────────
 
 _DOC_FILTER = "Документы (*.docx *.xlsx *.xls *.pdf)"
+_FILE_PLACEHOLDER = "Вставьте путь к файлу или нажмите «Выбрать»"
+_DIR_PLACEHOLDER = "Вставьте путь к папке или нажмите «Выбрать»"
+
+
+def _start_dir(current: str, default: Path) -> Path:
+    """Диалог открывается там, где уже лежит выбранное, — а не в папке по умолчанию."""
+    path = Path(clean_path(current)) if current else None
+    if path is not None:
+        if path.is_dir():
+            return path
+        if path.parent.is_dir():
+            return path.parent
+    return default
 
 
 def _pick_file(title: str, start_dir: Path, filters: str = _DOC_FILTER) -> str:
@@ -225,10 +241,6 @@ def _fmt_long(seconds: int) -> str:
     return f"~{minutes} мин"
 
 
-def _short(path: str, placeholder: str) -> str:
-    return Path(path).name if path else placeholder
-
-
 REQUIRED_INPUTS = (
     ("requirements_file", "файл требований конкурса"),
     ("archive_folder", "папку с документами"),
@@ -239,7 +251,100 @@ REQUIRED_INPUTS = (
 
 def missing_inputs(**inputs) -> list:
     """Незаполненные обязательные поля — человекочитаемыми названиями."""
-    return [name for key, name in REQUIRED_INPUTS if not inputs.get(key)]
+    return [name for key, name in REQUIRED_INPUTS if not clean_path(inputs.get(key))]
+
+
+# ── Проверка путей ────────────────────────────────────────────────────────────
+
+class InputPathError(ValueError):
+    """Путь в форме не существует или не того типа — запуск не начинается.
+
+    Проверяем до отправки запроса: иначе сервис потратит минуты и токены на
+    этапы 1–2 и только потом упадёт на неверной папке, а в пустой папке
+    архива «молча» не найдёт ни одного документа.
+    """
+
+
+# (ключ, название поля, что ожидается)
+PATH_INPUTS = (
+    ("requirements_file", "Требования конкурса", "file"),
+    ("archive_folder", "Папка с документами организации", "dir"),
+    ("template_file", "Шаблон заявки", "file"),
+    ("normative_folder", "Нормативная база", "dir"),
+    ("knowledge_folder", "База знаний и эталонные заявки", "dir"),
+    ("results_folder", "Папка для результатов", "results"),
+)
+
+_SUPPORTED_DOCS = {".docx", ".xlsx", ".xls", ".pdf"}
+
+
+def clean_path(text) -> str:
+    """Путь из поля ввода: без пробелов и кавычек по краям.
+
+    «Копировать как путь» в Проводнике даёт путь в двойных кавычках —
+    пользователь вставляет его как есть.
+    """
+    return str(text or "").strip().strip('"').strip("'").strip()
+
+
+def path_error(value: str, kind: str) -> str:
+    """Что не так с путём; пустая строка — путь в порядке или не указан."""
+    value = clean_path(value)
+    if not value:
+        return ""
+
+    path = Path(value)
+    if not path.is_absolute():
+        return "Укажите полный путь, например C:\\Конкурсы\\44-2026"
+
+    if kind == "file":
+        if path.is_dir():
+            return "Указана папка, а нужен файл"
+        if not path.is_file():
+            return "Файл не найден"
+        suffix = path.suffix.lower()
+        if suffix == ".doc":
+            return "Формат .doc не поддерживается — сохраните файл как .docx"
+        if suffix not in _SUPPORTED_DOCS:
+            return f"Формат {suffix or 'без расширения'} не поддерживается: нужен .docx, .xlsx, .xls или .pdf"
+        return ""
+
+    if path.is_file():
+        return "Указан файл, а нужна папка"
+    if kind == "results":
+        # Папку результатов создадим сами, но только внутри существующей:
+        # опечатка в начале пути не должна плодить папки на диске.
+        if not path.exists() and not path.parent.is_dir():
+            return f"Папка не найдена, и создать её нельзя: нет папки {path.parent}"
+        return ""
+    if not path.is_dir():
+        return "Папка не найдена"
+    return ""
+
+
+def invalid_inputs(**inputs) -> dict:
+    """{ключ поля: что не так} по всем заполненным полям."""
+    errors = {}
+    for key, _, kind in PATH_INPUTS:
+        error = path_error(inputs.get(key), kind)
+        if error:
+            errors[key] = error
+    return errors
+
+
+def validate_inputs(**inputs) -> None:
+    """Поднимает InputPathError, если запускать с такими путями нельзя."""
+    problems = []
+    missing = missing_inputs(**inputs)
+    if missing:
+        problems.append("укажите " + ", ".join(missing))
+
+    titles = {key: title for key, title, _ in PATH_INPUTS}
+    for key, error in invalid_inputs(**inputs).items():
+        problems.append(f"{titles[key]}: {error.lower()}")
+
+    if problems:
+        raise InputPathError("Проверьте пути — " + "; ".join(problems))
 
 
 def _result_summary(data: dict) -> str:
@@ -304,14 +409,25 @@ def _error_detail(response) -> str:
 
 # ── Строка выбора пути ────────────────────────────────────────────────────────
 
-def _picker_row(title: str, value: str, placeholder: str, on_pick, hint: str = ""):
+def _input_s(error: bool) -> dict:
+    return {"background-color": _INPUT_BG, "color": _WHITE, "font-size": "13px",
+            "padding": "6px 8px", "border-radius": "6px", "margin-right": "8px",
+            "border": f"1px solid {_RED if error else _DIM}"}
+
+
+def _picker_row(title: str, value: str, placeholder: str, on_pick, on_change,
+                error: str = "", hint: str = ""):
+    """Поле с путём: можно вставить путь вручную или выбрать в диалоге."""
     with VBoxView(style=card()):
         Label(text=title, style={**label_s(), "margin-bottom": "6px"})
         with HBoxView():
-            Label(text=_short(value, placeholder),
-                  style=value_s(filled=bool(value)))
+            TextInput(text=value, placeholder_text=placeholder,
+                      on_change=on_change, style=_input_s(bool(error)))
             Button(title="Выбрать", on_click=on_pick, style=btn())
-        if hint:
+        if error:
+            Label(text=error, word_wrap=True,
+                  style={"color": _ERROR_TEXT, "font-size": "12px", "margin-top": "6px"})
+        elif hint:
             Label(text=hint, style={**label_s(), "font-size": "11px",
                                     "margin-top": "6px"})
 
@@ -345,67 +461,72 @@ def TenderAssistantApp(self):
         set_status("Готов к работе")
 
     def pick_requirements(_=None):
-        path = _pick_file("Требования конкурса", TENDERS_DIR)
+        path = _pick_file("Требования конкурса", _start_dir(requirements_file, TENDERS_DIR))
         if path:
             set_requirements_file(path)
             logger.info(f"Выбрано — Требования конкурса: {path}")
             _reset_result()
 
     def pick_archive(_=None):
-        path = _pick_directory("Папка с документами организации", DOCUMENTS_DIR)
+        path = _pick_directory("Папка с документами организации", _start_dir(archive_folder, DOCUMENTS_DIR))
         if path:
             set_archive_folder(path)
             logger.info(f"Выбрано — Папка с документами организации: {path}")
             _reset_result()
 
     def pick_template(_=None):
-        path = _pick_file("Шаблон заявки", TENDERS_DIR)
+        path = _pick_file("Шаблон заявки", _start_dir(template_file, TENDERS_DIR))
         if path:
             set_template_file(path)
             logger.info(f"Выбрано — Шаблон заявки: {path}")
             _reset_result()
 
     def pick_normative(_=None):
-        path = _pick_directory("Нормативная база", NORMATIVE_DIR)
+        path = _pick_directory("Нормативная база", _start_dir(normative_folder, NORMATIVE_DIR))
         if path:
             set_normative_folder(path)
             logger.info(f"Выбрано — Нормативная база: {path}")
             _reset_result()
 
     def pick_knowledge(_=None):
-        path = _pick_directory("База знаний и эталонные заявки", KNOWLEDGE_DIR)
+        path = _pick_directory("База знаний и эталонные заявки", _start_dir(knowledge_folder, KNOWLEDGE_DIR))
         if path:
             set_knowledge_folder(path)
             logger.info(f"Выбрано — База знаний и эталонные заявки: {path}")
             _reset_result()
 
     def pick_results(_=None):
-        path = _pick_directory("Папка для результатов", RESULTS_DIR)
+        path = _pick_directory("Папка для результатов", _start_dir(results_folder, RESULTS_DIR))
         if path:
             set_results_folder(path)
             logger.info(f"Выбрано — Папка для результатов: {path}")
             _reset_result()
 
+    def typed(setter):
+        """Путь, набранный или вставленный вручную в поле ввода."""
+        def on_change(text: str):
+            setter(text)
+            _reset_result()
+        return on_change
+
     # ── Запуск обработки ──────────────────────────────────────────────────
 
     def _inputs() -> dict:
-        return {
+        return {key: clean_path(value) for key, value in {
             "requirements_file": requirements_file,
             "archive_folder": archive_folder,
             "template_file": template_file,
             "results_folder": results_folder,
             "normative_folder": normative_folder,
             "knowledge_folder": knowledge_folder,
-        }
-
-    def _missing_inputs() -> list:
-        return missing_inputs(**_inputs())
+        }.items()}
 
     async def _process_async():
-        missing = _missing_inputs()
-        if missing:
-            set_status("Укажите: " + ", ".join(missing))
-            logger.warning(f"Запуск без обязательных полей: {', '.join(missing)}")
+        try:
+            validate_inputs(**_inputs())
+        except InputPathError as exc:
+            set_status(str(exc))
+            logger.warning(f"Запуск отклонён: {exc}")
             return
 
         set_processing(True)
@@ -480,7 +601,8 @@ def TenderAssistantApp(self):
 
     # ── Отрисовка ─────────────────────────────────────────────────────────
 
-    ready = not _missing_inputs()
+    errors = invalid_inputs(**_inputs())
+    ready = not missing_inputs(**_inputs()) and not errors
 
     with Window(title="Конкурсный ассистент",
                 style={"background-color": _BG,
@@ -502,13 +624,17 @@ def TenderAssistantApp(self):
                   style={**label_s(), "font-size": "11px",
                          "font-weight": "bold", "margin-bottom": "8px"})
 
-            _picker_row("Требования конкурса", requirements_file, "Не выбраны",
-                        pick_requirements,
+            _picker_row("Требования конкурса", requirements_file, _FILE_PLACEHOLDER,
+                        pick_requirements, typed(set_requirements_file),
+                        errors.get("requirements_file", ""),
                         "Документ, из которого берётся перечень документов")
             _picker_row("Папка с документами организации", archive_folder,
-                        "Не выбрана", pick_archive,
+                        _DIR_PLACEHOLDER, pick_archive, typed(set_archive_folder),
+                        errors.get("archive_folder", ""),
                         "Архив, где ищутся файлы для комплекта заявки")
-            _picker_row("Шаблон заявки", template_file, "Не выбран", pick_template,
+            _picker_row("Шаблон заявки", template_file, _FILE_PLACEHOLDER,
+                        pick_template, typed(set_template_file),
+                        errors.get("template_file", ""),
                         "Форма, которую нужно заполнить")
 
             # ── Базы знаний ───────────────────────────────────────────────
@@ -517,11 +643,13 @@ def TenderAssistantApp(self):
                   style={**label_s(), "font-size": "11px", "font-weight": "bold",
                          "margin-top": "8px", "margin-bottom": "8px"})
 
-            _picker_row("Нормативная база", normative_folder, "Не выбрана",
-                        pick_normative,
+            _picker_row("Нормативная база", normative_folder, _DIR_PLACEHOLDER,
+                        pick_normative, typed(set_normative_folder),
+                        errors.get("normative_folder", ""),
                         "По ней проверяется перечень документов")
             _picker_row("База знаний и эталонные заявки", knowledge_folder,
-                        "Не выбрана", pick_knowledge,
+                        _DIR_PLACEHOLDER, pick_knowledge, typed(set_knowledge_folder),
+                        errors.get("knowledge_folder", ""),
                         "Из неё берутся значения для заполнения заявки")
 
             # ── Результаты ────────────────────────────────────────────────
@@ -530,8 +658,10 @@ def TenderAssistantApp(self):
                   style={**label_s(), "font-size": "11px", "font-weight": "bold",
                          "margin-top": "8px", "margin-bottom": "8px"})
 
-            _picker_row("Папка для результатов", results_folder, "Не выбрана",
-                        pick_results, "Сюда попадут комплект документов и отчёты")
+            _picker_row("Папка для результатов", results_folder, _DIR_PLACEHOLDER,
+                        pick_results, typed(set_results_folder),
+                        errors.get("results_folder", ""),
+                        "Сюда попадут комплект документов и отчёты")
 
             Button(
                 title="Обработка..." if processing else "Подготовить заявку",

@@ -132,11 +132,81 @@ class TestFormatting:
     def test_long_duration(self, seconds, expected):
         assert gui._fmt_long(seconds) == expected
 
-    def test_path_is_shortened_to_file_name(self):
-        assert gui._short(r"D:\a\b\form.docx", "Не выбран") == "form.docx"
+class TestPathValidation:
+    """Неверные пути ловятся в окне, до отправки запроса в сервис."""
 
-    def test_placeholder_for_empty_path(self):
-        assert gui._short("", "Не выбран") == "Не выбран"
+    @pytest.fixture
+    def paths(self, tmp_path):
+        (tmp_path / "archive").mkdir()
+        (tmp_path / "results").mkdir()
+        (tmp_path / "req.docx").write_bytes(b"x")
+        (tmp_path / "form.docx").write_bytes(b"x")
+        return {
+            "requirements_file": str(tmp_path / "req.docx"),
+            "archive_folder": str(tmp_path / "archive"),
+            "template_file": str(tmp_path / "form.docx"),
+            "results_folder": str(tmp_path / "results"),
+            "normative_folder": "",
+            "knowledge_folder": "",
+        }
+
+    def test_valid_paths_pass(self, paths):
+        gui.validate_inputs(**paths)
+        assert gui.invalid_inputs(**paths) == {}
+
+    def test_missing_folder_is_reported(self, paths, tmp_path):
+        paths["archive_folder"] = str(tmp_path / "нет такой")
+        assert gui.invalid_inputs(**paths) == {"archive_folder": "Папка не найдена"}
+        with pytest.raises(gui.InputPathError, match="Папка с документами организации"):
+            gui.validate_inputs(**paths)
+
+    def test_optional_folder_is_checked_when_given(self, paths, tmp_path):
+        paths["knowledge_folder"] = str(tmp_path / "нет такой")
+        assert "knowledge_folder" in gui.invalid_inputs(**paths)
+
+    def test_file_instead_of_folder(self, paths):
+        paths["archive_folder"] = paths["template_file"]
+        assert gui.invalid_inputs(**paths)["archive_folder"] == "Указан файл, а нужна папка"
+
+    def test_folder_instead_of_file(self, paths):
+        paths["template_file"] = paths["archive_folder"]
+        assert gui.invalid_inputs(**paths)["template_file"] == "Указана папка, а нужен файл"
+
+    def test_missing_file(self, paths, tmp_path):
+        paths["requirements_file"] = str(tmp_path / "нет.docx")
+        assert gui.invalid_inputs(**paths)["requirements_file"] == "Файл не найден"
+
+    def test_legacy_doc_is_rejected(self, paths, tmp_path):
+        (tmp_path / "old.doc").write_bytes(b"x")
+        paths["template_file"] = str(tmp_path / "old.doc")
+        assert ".docx" in gui.invalid_inputs(**paths)["template_file"]
+
+    def test_relative_path_is_rejected(self, paths):
+        """Относительный путь сервис разрешит от своей папки, а не от папки GUI."""
+        paths["archive_folder"] = "documents"
+        assert "полный путь" in gui.invalid_inputs(**paths)["archive_folder"]
+
+    def test_results_folder_is_created_inside_an_existing_one(self, paths, tmp_path):
+        paths["results_folder"] = str(tmp_path / "results" / "Конкурс 44")
+        assert gui.invalid_inputs(**paths) == {}
+
+    def test_results_folder_with_a_typo_in_the_parent(self, paths, tmp_path):
+        paths["results_folder"] = str(tmp_path / "нет" / "Конкурс 44")
+        assert "создать её нельзя" in gui.invalid_inputs(**paths)["results_folder"]
+
+    def test_pasted_path_in_quotes(self, paths):
+        """«Копировать как путь» в Проводнике даёт путь в кавычках."""
+        paths["archive_folder"] = f'  "{paths["archive_folder"]}" '
+        assert gui.invalid_inputs(**paths) == {}
+        assert gui.clean_path(paths["archive_folder"]).endswith("archive")
+
+    def test_missing_and_invalid_are_reported_together(self, paths, tmp_path):
+        paths["template_file"] = ""
+        paths["archive_folder"] = str(tmp_path / "нет")
+        with pytest.raises(gui.InputPathError) as error:
+            gui.validate_inputs(**paths)
+        assert "шаблон заявки" in str(error.value)
+        assert "папка не найдена" in str(error.value)
 
 
 class TestConfig:
