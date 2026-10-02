@@ -2,7 +2,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List
+from typing import Iterator, List, Optional
 
 import pandas as pd
 import pdfplumber
@@ -387,6 +387,64 @@ class MarkdownOutline:
                 return section
 
         return None
+
+    # Номер в начале заголовка: «4.», «4.1», «Раздел 2», «Подраздел 2.1».
+    _TITLE_NUMBER = re.compile(
+        r"^\s*(?:(?:ПОДРАЗДЕЛ|Подраздел|РАЗДЕЛ|Раздел|ГЛАВА|Глава|ПУНКТ|Пункт)\s+)?"
+        r"(\d+(?:\.\d+)*)\.?(?=\s|$)"
+    )
+
+    def subtree_text(self, section: "Section") -> str:
+        """Раздел вместе со всеми подразделами.
+
+        Тело раздела в outline обрывается на следующем заголовке любого уровня,
+        поэтому у раздела «4. Состав заявки» с подразделами 4.1–4.5 оно пустое:
+        перечень документов лежит как раз в подразделах. Подраздел — всё, что
+        идёт следом и вложено по номеру (4.1 в 4) или по уровню заголовка.
+        """
+        parts = [section.text] + [s.text for s in self.descendants(section)]
+        return "\n\n".join(part for part in parts if part)
+
+    def descendants(self, section: "Section") -> list["Section"]:
+        """Подразделы раздела — все, что идут следом и вложены в него."""
+        index = self._index(section)
+        result = []
+        for following in self._sections[index + 1:]:
+            if not self._is_nested(section, following):
+                break
+            result.append(following)
+        return result
+
+    def contains(self, parent: "Section", child: "Section") -> bool:
+        """child лежит внутри parent (входит в его subtree_text)."""
+        start, end = self._index(parent), self._index(child)
+        if end <= start:
+            return False
+        return all(self._is_nested(parent, s) for s in self._sections[start + 1:end + 1])
+
+    def find_by_number(self, number: str) -> Optional["Section"]:
+        """Раздел с номером в заголовке: «2.1» найдёт «2.1. Перечень документов»."""
+        for section in self._sections:
+            if self.title_number(section.title) == number:
+                return section
+        return None
+
+    @classmethod
+    def title_number(cls, title: str) -> Optional[str]:
+        match = cls._TITLE_NUMBER.match(title or "")
+        return match.group(1) if match else None
+
+    def _index(self, section: "Section") -> int:
+        return next(i for i, s in enumerate(self._sections) if s is section)
+
+    def _is_nested(self, parent: "Section", child: "Section") -> bool:
+        parent_number = self.title_number(parent.title)
+        child_number = self.title_number(child.title)
+        # Нумерация надёжнее стилей: в документах заказчика «4.1» нередко
+        # оформлен тем же стилем «Заголовок 1», что и «4».
+        if parent_number and child_number:
+            return child_number.startswith(parent_number + ".")
+        return child.level > parent.level
 
     def _parse(self, text: str) -> list["Section"]:
         sections = self._parse_markdown(text)

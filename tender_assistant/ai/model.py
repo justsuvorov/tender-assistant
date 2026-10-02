@@ -424,12 +424,15 @@ class QwenModel(AIModel):
             json={
                 "model": self._model_name,
                 "prompt": query,
+                "temperature": settings.ai_temperature,
                 "max_tokens": settings.qwen_max_tokens,
             },
         )
         resp.raise_for_status()
         data = resp.json()
-        text = data["choices"][0]["text"]
+        # content бывает null (весь ответ ушёл в рассуждения) — это пустой
+        # ответ, его повторяем, а не падаем на re.sub(None).
+        text = data["choices"][0]["text"] or ""
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         if not text:
             raise ValueError("Qwen не вернул текст")
@@ -540,13 +543,18 @@ class VskAIModel(AIModel):
             json={
                 "model": self._model_name,
                 "messages": [{"role": "user", "content": query}],
+                # Без temperature сервер берёт своё значение по умолчанию, и
+                # один и тот же документ даёт разный перечень от запуска к запуску.
+                "temperature": settings.ai_temperature,
                 "thinking_token_budget": settings.vsk_thinking_token_budget,
                 "max_tokens": settings.vsk_max_tokens,
             },
         )
         resp.raise_for_status()
         data = resp.json()
-        text = data["choices"][0]["message"]["content"]
+        # content бывает null (весь ответ ушёл в рассуждения) — это пустой
+        # ответ, его повторяем, а не падаем на re.sub(None).
+        text = data["choices"][0]["message"]["content"] or ""
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         if not text:
             raise ValueError("VSK AI не вернул текст")

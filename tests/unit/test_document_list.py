@@ -36,14 +36,31 @@ class TestDocumentSections:
         assert "4. 3. Состав заявки участника" in listing
 
     def test_section_text_returns_only_that_section(self, sections):
-        text = sections.section_text("3. Состав заявки участника")
+        section = sections.outline.find("3. Состав заявки участника")
+        text = sections.section_text(section)
         assert "Выписка из ЕГРЮЛ" in text
         assert "Критерии оценки" not in text
 
-    def test_unknown_header_falls_back_to_whole_document(self, sections):
-        """Заголовок не найден — лучше отдать модели весь документ, чем ничего."""
-        text = sections.section_text("Такого раздела нет")
-        assert text == sections.markdown
+    def test_sections_list_shows_the_start_of_each_section(self, sections):
+        """По одному заголовку модель выбирает нестабильно — показываем начало текста."""
+        assert "— 3.1. Выписка из ЕГРЮЛ" in sections.sections_list()
+
+    def test_unknown_header_is_ignored(self, sections):
+        """Выдуманный моделью заголовок не ломает выбор: остаётся страховка."""
+        titles = [s.title for s in sections.candidate_sections(["Такого раздела нет"])]
+        assert titles == ["3. Состав заявки участника"]
+
+    def test_section_with_many_documents_is_always_a_candidate(self, sections):
+        """Модель выбрала не тот раздел — раздел с перечнем всё равно в работе."""
+        titles = [s.title for s in sections.candidate_sections(["4. Критерии оценки"])]
+        assert titles == ["3. Состав заявки участника", "4. Критерии оценки"]
+
+    def test_nested_candidates_are_dropped(self, sections):
+        """Раздел внутри выбранного не обрабатывается второй раз."""
+        titles = [s.title for s in sections.candidate_sections(
+            ["Конкурсная документация", "3. Состав заявки участника"]
+        )]
+        assert titles == ["Конкурсная документация"]
 
     def test_document_without_headings(self, tmp_path):
         from docx import Document
@@ -99,7 +116,7 @@ class TestSectionsMatcher:
         ).result()
 
         assert [d.name for d in result.documents] == ["Устав"]
-        assert "Критерии оценки" in model.last_call(Marker.SECTION)
+        assert "Выписка из ЕГРЮЛ" in model.last_call(Marker.SECTION)
 
 
 class TestContextMatcher:
@@ -297,15 +314,32 @@ class TestDocumentList:
         assert result.source_headers == []
         assert model.call_count(Marker.HEADERS) == 0
 
+    def test_wrong_section_choice_is_backed_up_by_content(self, sections, results_dir):
+        """Модель выбрала «Критерии оценки» — перечень всё равно берётся из раздела 3."""
+        def section_reply(query: str) -> str:
+            if "Выписка из ЕГРЮЛ" in query:
+                return as_json({"is_document_list": True,
+                                "documents": [{"name": "Выписка из ЕГРЮЛ"}]})
+            return as_json({"is_document_list": False, "documents": []})
+
+        model = ScriptedModel({
+            Marker.HEADERS: fenced({"headers": ["4. Критерии оценки"]}),
+            Marker.SECTION: section_reply,
+        })
+        result = self._build(sections, model, results_dir).result()
+
+        assert [d.name for d in result.documents] == ["Выписка из ЕГРЮЛ"]
+        assert result.source_headers == ["3. Состав заявки участника", "4. Критерии оценки"]
+
     def test_section_without_documents_falls_back_to_whole_document(
         self, sections, results_dir
     ):
-        """Заголовок нашли, но перечня в разделе нет — читаем документ целиком."""
+        """Ни в одном разделе перечня нет — читаем документ целиком."""
         calls = {"n": 0}
 
         def section_reply(query: str) -> str:
             calls["n"] += 1
-            if calls["n"] == 1:
+            if calls["n"] <= 2:  # разделы 3 и 4
                 return as_json({"is_document_list": False, "documents": []})
             return as_json(
                 {"is_document_list": True, "documents": [{"name": "Устав"}]}
@@ -318,7 +352,7 @@ class TestDocumentList:
         result = self._build(sections, model, results_dir).result()
 
         assert [d.name for d in result.documents] == ["Устав"]
-        assert calls["n"] == 2
+        assert calls["n"] == 3
         assert "Конкурсная документация" in model.last_call(Marker.SECTION)
 
     def test_documents_from_several_sections_are_deduplicated(
@@ -337,3 +371,121 @@ class TestDocumentList:
 
         assert [d.name for d in result.documents] == ["Устав"]
         assert model.call_count(Marker.SECTION) == 2
+
+
+# ── Подразделы и ссылки на подразделы ────────────────────────────────────────
+
+def _sections_from(tmp_path, build) -> DocumentSections:
+    from docx import Document
+
+    doc = Document()
+    build(doc)
+    path = tmp_path / "req.docx"
+    doc.save(path)
+    return DocumentSections(DataParser(str(path)))
+
+
+def _nested_document(doc):
+    """Как в реальном извещении: «4.» — шапка, перечень лежит в 4.1 и 4.2."""
+    doc.add_heading("4. Требования. Документы. Состав заявки", level=1)
+    doc.add_heading("4.1. Документы участника", level=1)  # тот же стиль, что у 4.
+    doc.add_paragraph("Выписка из ЕГРЮЛ")
+    doc.add_heading("4.2. Документы о квалификации", level=1)
+    doc.add_paragraph("Копия лицензии")
+    doc.add_heading("5. Порядок подачи", level=1)
+    doc.add_paragraph("Заявка подаётся на ЭТП.")
+
+
+class TestSubsections:
+    def test_section_text_includes_its_subsections(self, tmp_path):
+        sections = _sections_from(tmp_path, _nested_document)
+        text = sections.section_text(sections.outline.find("4. Требования. Документы. Состав заявки"))
+
+        assert "Выписка из ЕГРЮЛ" in text and "Копия лицензии" in text
+        assert "Заявка подаётся на ЭТП" not in text
+
+    def test_empty_parent_section_is_previewed_by_its_subsections(self, tmp_path):
+        listing = _sections_from(tmp_path, _nested_document).sections_list()
+        assert "1. 4. Требования. Документы. Состав заявки\n   — 4.1. Документы участника" in listing
+
+
+def _referencing_document(doc):
+    doc.add_heading("2. Требования к участникам", level=1)
+    doc.add_paragraph("2.1. В состав заявки входят:")
+    doc.add_paragraph("а) выписка из ЕГРЮЛ;")
+    doc.add_paragraph("б) копия устава.")
+    doc.add_paragraph("2.2. Участник должен быть резидентом РФ.")
+    doc.add_heading("6. Состав заявки", level=1)
+    doc.add_paragraph("Заявка по Форме 1 и документы, указанные в подразделе 2.1.")
+
+
+class TestReferences:
+    def _extract(self, sections, section_reply):
+        model = ScriptedModel({
+            Marker.HEADERS: fenced({"headers": ["6. Состав заявки"]}),
+            Marker.SECTION: section_reply,
+        })
+        extractor = DocumentListExtractor(
+            document_sections=sections,
+            sections_matcher=SectionsMatcher(ai_model=model),
+            context_matcher=ContextMatcher(ai_model=model),
+        )
+        return extractor.extract(), model
+
+    def test_reference_is_replaced_by_the_documents_it_points_to(self, tmp_path):
+        sections = _sections_from(tmp_path, _referencing_document)
+
+        def reply(query):
+            if "а) выписка из ЕГРЮЛ" in query:
+                return as_json({"documents": [{"name": "Выписка из ЕГРЮЛ"},
+                                              {"name": "Копия устава"}]})
+            return as_json({"documents": [
+                {"name": "Заявка по Форме 1"},
+                {"name": "Документы, указанные в подразделе 2.1"},
+            ]})
+
+        extracted, model = self._extract(sections, reply)
+
+        assert [d["name"] for d in extracted.documents] == [
+            "Заявка по Форме 1", "Выписка из ЕГРЮЛ", "Копия устава",
+        ]
+        # Подраздел 2.1 — абзац, а не заголовок: берётся до пункта 2.2.
+        assert "резидентом" not in model.last_call(Marker.SECTION)
+
+    def test_missing_reference_is_kept_and_flagged(self, tmp_path):
+        sections = _sections_from(tmp_path, _referencing_document)
+
+        def reply(query):
+            return as_json({"documents": [
+                {"name": "Документы, указанные в подразделе 7.3"},
+            ]})
+
+        extracted, _ = self._extract(sections, reply)
+
+        assert len(extracted.documents) == 1
+        assert "проверьте другие тома" in extracted.documents[0]["note"]
+
+
+def _list_in_subsections(doc):
+    """Перечень раздела 5 разложен по подразделам, у самого «5.» текста нет."""
+    doc.add_heading("Извещение о проведении конкурса", level=1)
+    doc.add_heading("4. Требования к участникам", level=2)
+    doc.add_paragraph("Участник должен быть резидентом РФ.")
+    doc.add_heading("5. Порядок подготовки заявки", level=2)
+    doc.add_heading("5.1. Документы об участнике", level=3)
+    for line in ("Выписка из ЕГРЮЛ", "Копия устава", "Копия свидетельства ИНН"):
+        doc.add_paragraph(line)
+    doc.add_heading("5.2. Документы о квалификации", level=3)
+    for line in ("Копия лицензии", "Справка об опыте", "Декларация соответствия"):
+        doc.add_paragraph(line)
+    doc.add_heading("6. Состав заявки", level=2)
+    doc.add_paragraph("Заявка по форме 1.")
+
+
+class TestContentBackup:
+    def test_list_spread_over_subsections_is_found(self, tmp_path):
+        sections = _sections_from(tmp_path, _list_in_subsections)
+        titles = [s.title for s in sections.candidate_sections(["6. Состав заявки"])]
+
+        # «5.» целиком, без отдельных 5.1/5.2 и без корня-«Извещения».
+        assert titles == ["5. Порядок подготовки заявки", "6. Состав заявки"]

@@ -202,3 +202,62 @@ class TestAnthropicPromptCaching:
         assert result == "ответ"
         assert len(calls) == 2
         assert calls[0] == calls[1]  # оба вызова — с одним и тем же блоком материалов
+
+
+
+class TestSelfHostedPayload:
+    """VSK и Qwen: temperature уходит в запрос, content=null — пустой ответ."""
+
+    class _Response:
+        def __init__(self, data):
+            self._data = data
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._data
+
+    def _model(self, cls, monkeypatch, data, sent):
+        from tender_assistant.ai import model as model_module
+
+        model = cls()
+        monkeypatch.setattr(model_module.time, "sleep", lambda s: None)
+
+        def post(url, **kwargs):
+            sent.append(kwargs["json"])
+            return self._Response(data)
+
+        monkeypatch.setattr(model._client, "post", post)
+        return model
+
+    def test_vsk_sends_temperature(self, monkeypatch):
+        from tender_assistant.ai.model import VskAIModel
+        from tender_assistant.core.config import settings
+
+        sent = []
+        data = {"choices": [{"message": {"content": "ok"}}]}
+        assert self._model(VskAIModel, monkeypatch, data, sent).response("q") == "ok"
+        assert sent[0]["temperature"] == settings.ai_temperature
+
+    def test_qwen_sends_temperature(self, monkeypatch):
+        from tender_assistant.ai.model import QwenModel
+        from tender_assistant.core.config import settings
+
+        sent = []
+        data = {"choices": [{"text": "ok"}]}
+        assert self._model(QwenModel, monkeypatch, data, sent).response("q") == "ok"
+        assert sent[0]["temperature"] == settings.ai_temperature
+
+    def test_vsk_null_content_is_retried_as_empty(self, monkeypatch):
+        """Раньше падало TypeError: expected string, got NoneType."""
+        import pytest
+        from tender_assistant.ai.model import VskAIModel
+
+        sent = []
+        data = {"choices": [{"message": {"content": None}}]}
+        model = self._model(VskAIModel, monkeypatch, data, sent)
+
+        with pytest.raises(RuntimeError, match="не вернул текст"):
+            model.response("q")
+        assert len(sent) == model.empty_response_retries
