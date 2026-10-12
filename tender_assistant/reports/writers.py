@@ -57,6 +57,23 @@ def _matches(cell_text: str, label: str) -> bool:
     return len(shorter) >= 8 and shorter in longer
 
 
+def _add_heading(document: Document, text: str, level: int):
+    """Заголовок в чужом шаблоне.
+
+    add_heading требует стиля «Heading N», а в шаблонах заказчика его часто
+    нет: бланки формы набраны обычными абзацами. Без стиля пишем жирный
+    абзац — иначе KeyError роняет сохранение всей заполненной заявки.
+    """
+    # Проверяем заранее, а не ловим KeyError: add_heading успевает добавить
+    # абзац с текстом до того, как падает на установке стиля.
+    style_names = {style.name for style in document.styles}
+    if f"Heading {level}" in style_names:
+        return document.add_heading(text, level=level)
+    paragraph = document.add_paragraph()
+    paragraph.add_run(text).bold = True
+    return paragraph
+
+
 def _display_value(field: FilledField) -> str:
     if field.status is FieldStatus.MISSING or not field.value:
         return _MISSING_TEXT
@@ -322,7 +339,7 @@ class WordApplicationWriter(ReportWriter):
     def _append_unmatched(self, document: Document, fields: List[FilledField]) -> None:
         """Поля, которым не нашлось места в шаблоне, выносим в конец файла."""
         document.add_paragraph()
-        document.add_heading("Поля, не размещённые в шаблоне", level=2)
+        _add_heading(document, "Поля, не размещённые в шаблоне", level=2)
 
         for field in fields:
             paragraph = document.add_paragraph()

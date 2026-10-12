@@ -221,6 +221,26 @@ class TestWordApplicationWriter:
         assert "Поля нет в шаблоне: Значение" in text
         assert "проверить" in text
 
+    def test_template_without_heading_styles(self, tmp_path):
+        """Регрессия: в бланке заказчика нет стиля «Heading 2» — add_heading
+        падал с KeyError и роняло сохранение всей заполненной заявки."""
+        doc = Document()
+        doc.add_paragraph("ИНН ______")
+        for style in list(doc.styles):
+            if style.name.startswith("Heading"):
+                style.delete()
+        template = tmp_path / "бланк.docx"
+        doc.save(template)
+
+        out = WordApplicationWriter().write(
+            [field("Поля нет в шаблоне", "Значение", FieldStatus.CHECK)],
+            tmp_path / "out.docx", template,
+        )
+        texts = [p.text for p in Document(str(out)).paragraphs]
+
+        assert texts.count("Поля, не размещённые в шаблоне") == 1
+        assert "Поля нет в шаблоне: Значение" in texts
+
     def test_label_is_matched_loosely(self, template, tmp_path):
         """Модель возвращает наименование без нумерации и с сокращениями."""
         out = WordApplicationWriter().write(
